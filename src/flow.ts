@@ -5,8 +5,8 @@ import { saveFile } from './platform';
 import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
-import { renderSVG, DETAIL_KINDS, screenBox, setProjection, ISO, type Proj } from './iso';
-import { traceDetails } from './trace';
+import { renderSVG, DETAIL_KINDS, setProjection, ISO, type Proj } from './iso';
+import { vectorizeInk } from './trace';
 import { newId, type El, type Scene } from './schema';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -279,7 +279,7 @@ let resW = 1.35;          // 구조선 굵기 배율(다운로드에도 적용)
 let resD = 1.0;           // 가구선 굵기 배율
 let cmpX = 50;            // 비교 슬라이더 위치(%)
 
-let detailMode: 'trace' | 'shapes' = 'shapes';
+let detailMode: 'vector' | 'shapes' = 'vector';
 let renderSeq = 0;
 
 /** 결과 SVG: 구조는 도형, 가구·제품은 (선택에 따라) 원본에서 딴 곡선 패스 */
@@ -288,19 +288,18 @@ async function resultSvg(): Promise<string> {
   if (detailMode === 'shapes' || !rectImg) return renderSVG(result, { wscale: resW, wdetail: resD });
   const structure = { ...result, elements: result.elements.filter((e) => !DETAIL_KINDS.has(e.kind)) };
   const structSvg = renderSVG(structure, { wscale: resW });
-  const key = `${rectUrl?.length}:${structure.elements.length}:${JSON.stringify(structure.elements.map((e) => [e.a0, e.b0, e.a1, e.b1, e.z, e.h]))}`;
-  const regions = result.elements.filter((e) => DETAIL_KINDS.has(e.kind)).map((e) => screenBox(e));
-  const paths = await traceDetails(rectImg, structSvg, regions, key, (t) => ($('traceState').textContent = t));
-  const sw = (1.6 * resD).toFixed(2);
-  const group = `<g id="details" fill="none" stroke="#2B2B2B" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="${paths.join('')}"/></g>`;
+  const key = `${rectUrl?.length}:${resW}:${structure.elements.length}:${JSON.stringify(structure.elements.map((e) => [e.a0, e.b0, e.a1, e.b1, e.z, e.h]))}`;
+  const d = await vectorizeInk(rectImg, structSvg, null, key, (t) => ($('traceState').textContent = t));
+  // 원본 선은 채운 도형: 굵게 할 때만 같은 색 테두리를 더한다
+  const extra = Math.max(0, (resD - 1) * 1.6).toFixed(2);
+  const group = `<g id="details"><path fill="#2B2B2B" fill-rule="evenodd" stroke="#2B2B2B" stroke-width="${extra}" stroke-linejoin="round" d="${d}"/></g>`;
   return structSvg.replace(/<\/svg>$/, `${group}</svg>`);
 }
 
 async function renderResult() {
   if (!result) return;
   const seq = ++renderSeq;
-  const busy = detailMode === 'trace';
-  if (busy) $('traceState').textContent = '가구·제품 선을 곡선으로 따는 중… (몇 초)';
+  if (detailMode === 'vector') $('traceState').textContent = '원본 선을 벡터로 따는 중…';
   const svg = await resultSvg();
   if (seq !== renderSeq) return;
   $('traceState').textContent = '';
@@ -310,7 +309,7 @@ async function renderResult() {
   ($('resUnder') as HTMLImageElement).src = rectUrl ?? '';
 }
 $('detailMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.onclick = () => {
-  detailMode = b.dataset.m as 'trace' | 'shapes';
+  detailMode = b.dataset.m as 'vector' | 'shapes';
   $('detailMode').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
   void renderResult();
 }));

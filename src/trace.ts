@@ -220,3 +220,145 @@ export async function traceDetails(img: HTMLImageElement, structureSvg: string, 
   traceCache.set(key, paths);
   return paths;
 }
+
+// ================================================================ 원본 벡터화(윤곽 따기)
+// 획을 1px로 줄이지 않고, 잉크 농도장의 등고선(0.5)을 소수점 단위로 따서 채운 도형으로 만든다.
+// 선 굵기·끝 모양·작은 디테일이 원본 그대로 남는다.
+
+/** 잉크 농도(0~1): 주변 배경보다 얼마나 어두운지. 채도 높은 색(초록 표시 등)은 0 */
+function inkStrength(img: HTMLImageElement, k = 1) {
+  const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const g = cv.getContext('2d', { willReadFrequently: true })!;
+  g.imageSmoothingQuality = 'high';
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h), sat = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+    sat[i] = Math.max(r, gg, b) - Math.min(r, gg, b);
+    lum[i] = sat[i] > 70 ? 255 : 0.299 * r + 0.587 * gg + 0.114 * b;   // 색 면(초록 바닥 등)은 배경으로
+  }
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += lum[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; } }
+  const R = 15, s = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+      const bg = Math.max(lum[y * w + x], (I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0]) / ((x1 - x0) * (y1 - y0)));
+      const i = y * w + x;
+      s[i] = sat[i] > 70 ? 0 : Math.max(0, Math.min(1, (Math.min(bg, 245) - lum[i]) / 110));
+    }
+  }
+  // 흐림 없이 그대로 쓴다(1px 가는 선도 살리기 위해). 계단 무늬는 곡선 다듬기에서 정리된다.
+  return { w, h, s };
+}
+
+/** 마칭 스퀘어로 0.5 등고선 고리들을 만든다(소수점 좌표). 메모리를 아끼려고 고정 크기 배열을 쓴다. */
+function contours(s: Float32Array, w: number, h: number, iso = 0.5): Pt[][] {
+  const N = 2 * w * h;
+  const px = new Float32Array(N), py = new Float32Array(N);
+  const n1 = new Int32Array(N).fill(-1), n2 = new Int32Array(N).fill(-1);
+  const hid = (x: number, y: number) => 2 * (y * w + x), vid = (x: number, y: number) => 2 * (y * w + x) + 1;
+  const lerp = (a: number, b: number) => (iso - a) / (b - a || 1e-9);
+  const link = (p: number, q: number) => {
+    if (n1[p] < 0) n1[p] = q; else n2[p] = q;
+    if (n1[q] < 0) n1[q] = p; else n2[q] = p;
+  };
+  for (let y = 0; y < h - 1; y++) for (let x = 0; x < w - 1; x++) {
+    const v0 = s[y * w + x], v1 = s[y * w + x + 1], v2 = s[(y + 1) * w + x + 1], v3 = s[(y + 1) * w + x];
+    const c = (v0 >= iso ? 1 : 0) | (v1 >= iso ? 2 : 0) | (v2 >= iso ? 4 : 0) | (v3 >= iso ? 8 : 0);
+    if (c === 0 || c === 15) continue;
+    const T = hid(x, y), B = hid(x, y + 1), L = vid(x, y), Rr = vid(x + 1, y);
+    px[T] = x + lerp(v0, v1); py[T] = y;
+    px[B] = x + lerp(v3, v2); py[B] = y + 1;
+    px[L] = x; py[L] = y + lerp(v0, v3);
+    px[Rr] = x + 1; py[Rr] = y + lerp(v1, v2);
+    const mid = (v0 + v1 + v2 + v3) / 4 >= iso;
+    switch (c) {
+      case 1: case 14: link(L, T); break;
+      case 2: case 13: link(T, Rr); break;
+      case 3: case 12: link(L, Rr); break;
+      case 4: case 11: link(Rr, B); break;
+      case 6: case 9: link(T, B); break;
+      case 7: case 8: link(L, B); break;
+      case 5: if (mid) { link(L, B); link(T, Rr); } else { link(L, T); link(Rr, B); } break;
+      case 10: if (mid) { link(L, T); link(Rr, B); } else { link(T, Rr); link(L, B); } break;
+    }
+  }
+  const seen = new Uint8Array(N), loops: Pt[][] = [];
+  for (let start = 0; start < N; start++) {
+    if (n1[start] < 0 || seen[start]) continue;
+    const loop: Pt[] = []; let prev = -1, cur = start;
+    while (cur >= 0 && !seen[cur]) {
+      seen[cur] = 1; loop.push([px[cur], py[cur]]);
+      const nx = n1[cur] !== prev ? n1[cur] : n2[cur];
+      prev = cur; cur = nx;
+    }
+    if (loop.length >= 4) loops.push(loop);
+  }
+  return loops;
+}
+
+const area = (p: Pt[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q[0] * r[1] - r[0] * q[1]; } return Math.abs(a) / 2; };
+
+/** 닫힌 윤곽 → 매끈한 패스(모서리는 각지게) */
+function loopPath(loop: Pt[]): string {
+  // 닫힌 윤곽을 120점 조각으로 나눠 단순화(긴 윤곽에서도 빠르게)
+  const p: Pt[] = [];
+  for (let i = 0; i < loop.length; i += 120) {
+    const piece = loop.slice(i, i + 121);
+    if (i + 121 > loop.length) piece.push(loop[0]);
+    p.push(...rdp(piece, 0.35).slice(0, -1));
+  }
+  const n = p.length;
+  if (n < 3) return '';
+  const corner = p.map((q, i) => {
+    const a = p[(i - 1 + n) % n], b = p[(i + 1) % n];
+    const u = sub(q, a), v = sub(b, q), c = (u[0] * v[0] + u[1] * v[1]) / ((Math.hypot(u[0], u[1]) * Math.hypot(v[0], v[1])) || 1);
+    return c < Math.cos((55 * Math.PI) / 180);
+  });
+  let d = `M${f1(p[0][0])} ${f1(p[0][1])}`;
+  for (let i = 0; i < n; i++) {
+    const p1 = p[i], p2 = p[(i + 1) % n];
+    if (corner[i] || corner[(i + 1) % n]) { d += `L${f1(p2[0])} ${f1(p2[1])}`; continue; }
+    const p0 = p[(i - 1 + n) % n], p3 = p[(i + 2) % n];
+    d += `C${f1(p1[0] + (p2[0] - p0[0]) / 6)} ${f1(p1[1] + (p2[1] - p0[1]) / 6)} ${f1(p2[0] - (p3[0] - p1[0]) / 6)} ${f1(p2[1] - (p3[1] - p1[1]) / 6)} ${f1(p2[0])} ${f1(p2[1])}`;
+  }
+  return d + 'Z';
+}
+
+const vecCache = new Map<string, string>();
+
+/**
+ * 원본 벡터화: 구조 도형(structureSvg)이 이미 그린 선을 빼고, 나머지 원본 잉크를 윤곽 도형 패스 하나(d)로 돌려준다.
+ * regions가 있으면 그 안만, null이면 그림 전체.
+ */
+export async function vectorizeInk(img: HTMLImageElement, structureSvg: string | null, regions: Region[] | null, key: string, onStage?: (s: string) => void): Promise<string> {
+  const hit = vecCache.get(key);
+  if (hit !== undefined) return hit;
+  onStage?.('원본 선을 읽는 중…');
+  await yieldUI();
+  const W0 = img.naturalWidth, H0 = img.naturalHeight;
+  const k = Math.max(1, Math.min(2, Math.sqrt(5e6 / (W0 * H0))));   // 작은 그림은 최대 2배로 키워서 딴다
+  const { w, h, s } = inkStrength(img, k);
+  if (regions) {
+    const keep = new Uint8Array(w * h);
+    for (const [x0, y0, x1, y1] of regions) {
+      const ax = Math.max(1, Math.floor(x0 * k)), ay = Math.max(1, Math.floor(y0 * k)), bx = Math.min(w - 2, Math.ceil(x1 * k)), by = Math.min(h - 2, Math.ceil(y1 * k));
+      for (let y = ay; y <= by; y++) keep.fill(1, y * w + ax, y * w + bx + 1);
+    }
+    for (let i = 0; i < w * h; i++) if (!keep[i]) s[i] = 0;
+  }
+  if (structureSvg) {
+    const struct = await strokeMask(structureSvg, w, h, Math.round(2 * k));
+    for (let i = 0; i < w * h; i++) if (struct[i]) s[i] = 0;
+  }
+  onStage?.('윤곽을 곡선으로 따는 중…');
+  await yieldUI();
+  const loops = contours(s, w, h, 0.42).filter((l) => area(l) >= 2 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
+  const d = loops.map(loopPath).join('');
+  vecCache.set(key, d);
+  return d;
+}
