@@ -50,7 +50,7 @@ type StepKey = 'rect' | 'draft' | `fix${number}` | 'done';
 type Stats = { lines: number; before: number; after: number };
 
 // 단계별 예상 시간(초). 구독 호출 기준 관측치에 여유를 둔 범위.
-const ETA = { rect: [5, 20], draft: [120, 300], fix: [90, 240], done: [1, 2] } as const;
+const ETA = { rect: [5, 20], draft: [90, 210], fix: [60, 150], done: [1, 2] } as const;
 const etaOf = (k: string): readonly [number, number] => (k === 'rect' ? ETA.rect : k === 'draft' ? ETA.draft : k === 'done' ? ETA.done : ETA.fix);
 const fmt = (sec: number) => (sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분${Math.round(sec % 60) ? ` ${Math.round(sec % 60)}초` : ''}`);
 const fmtRange = ([a, b]: readonly [number, number]) => (b < 60 ? `${a}~${b}초` : `${Math.round(a / 60 * 2) / 2}~${Math.round(b / 60 * 2) / 2}분`);

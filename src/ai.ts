@@ -6,7 +6,7 @@ import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
 import { getSample, inClaude } from './platform';
 import { renderRegion, splitRegions, type Rect } from './grid';
 import { P, getProjection, liftShift } from './iso';
-import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, type Field } from './fit';
+import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, groundScene, type Field } from './fit';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -278,16 +278,17 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   // 구역 수: 긴 변 약 550px마다 1구역 → 호출 1번이 짧아지고 구역마다 해상도가 높아진다
   const n = Math.max(1, Math.min(5, Math.round(Math.max(W, H) / 550)));
   const regions = splitRegions(W, H, n);
-  const field = edgeField(opts.base);
-  const out: El[] = [];
-  // 화면 아래(앞·아래층) 구역부터: 합칠 때 아래층이 먼저 그려진다
-  for (let idx = n - 1; idx >= 0; idx--) {
+  const img = opts.base;
+  const field = edgeField(img);
+  // 구역들을 동시에(최대 3개) 보낸다. 결과는 화면 아래(앞·아래층) 구역부터 이어 붙여 아래층이 먼저 그려지게 한다.
+  const band = async (idx: number): Promise<El[]> => {
+    const out: El[] = [];
     const { core, crop } = regions[idx];
     const label = n > 1 ? `구역 ${n - idx}/${n}` : '전체';
     const mine = refine ? opts.current!.filter((e) => !ANNOTATION.has(e.kind) && inside(centerOf(e), core, W, H)) : [];
-    const gridded = await renderRegion(opts.base, { crop, grid: true, overlaySvg: refine ? opts.overlaySvg : null });
+    const gridded = await renderRegion(img, { crop, grid: true, overlaySvg: refine ? opts.overlaySvg : null });
     const images = [await blobOf(gridded)];
-    if (twoImages) images.unshift(await blobOf(await renderRegion(opts.base, { crop })));
+    if (twoImages) images.unshift(await blobOf(await renderRegion(img, { crop })));
     const where = `This request covers one horizontal band of a larger drawing: screen pixels x ${Math.round(crop.x)}..${Math.round(crop.x + crop.w)}, y ${Math.round(crop.y)}..${Math.round(crop.y + crop.h)} of the full ${W} x ${H} image. The grid labels are GLOBAL chart coordinates of the full image - use them exactly as printed. Output every element whose main part is visible in this band (other bands are handled separately).`;
     const imgs = twoImages ? 'Image 1 is the band of the original; image 2 is the same band with the isometric grid' : 'The image is the band of the original with the isometric grid drawn over it';
     if (refine) {
@@ -311,7 +312,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
         out.push(...mine);   // 이 구역 보정이 실패하면 그대로 둔다(전체 작업은 계속)
         opts.onProgress?.(`${label} · 보정을 건너뜀 (오류 코드: ${err.code})`);
       }
-      continue;
+      return out;
     }
     const task = `${where}\n${imgs}. Build the scene elements for this band.`;
     const base = `${systemPrompt()}\n\n${LINE_FORMAT}\n\n${task}`;
@@ -319,9 +320,19 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
     const fit = fitDraft(els.filter((e) => inside(centerOf(e), core, W, H)), field);
     out.push(...fit.els);
     opts.onProgress?.(`${label} · 원본 선에 맞춤 ${fit.moved} · 근거 없어 제외 ${fit.dropped}`);
-  }
-  if (!out.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
-  return out;
+    return out;
+  };
+  const results: El[][] = new Array(n);
+  const order = Array.from({ length: n }, (_, i) => n - 1 - i);
+  let next = 0;
+  const worker = async () => { while (next < order.length) { const idx = order[next++]; results[idx] = await band(idx); } };
+  await Promise.all(Array.from({ length: Math.min(3, n) }, worker));
+  const merged = order.flatMap((idx) => results[idx] ?? []);
+  if (!merged.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
+  // 공간 규칙: 건물 밖 물건 제외, 뜬 물건은 받침 위나 바닥으로, 벽과 겹치면 밀어내기, 비정상 크기 줄이기
+  const g = groundScene(merged);
+  opts.onProgress?.(`공간 정리 · 받침에 올림 ${g.lifted} · 바닥으로 내림 ${g.dropped2floor} · 벽에서 밀어냄 ${g.pushed} · 건물 밖 제외 ${g.removed} · 크기 조정 ${g.resized}`);
+  return g.els;
 }
 
 const SAMPLE_ERR: Record<string, string> = {

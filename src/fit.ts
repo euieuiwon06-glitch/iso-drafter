@@ -145,3 +145,86 @@ export function acceptEdit(oldE: El, newE: El, f: Field): boolean {
 export const acceptAdd = (e: El, f: Field) => { const s = support(e, f); return s === null || s >= 0.25; };
 /** 삭제: 원본과 잘 맞는 요소는 지우지 않는다 */
 export const acceptDel = (e: El, f: Field) => { const s = support(e, f); return s === null || s < 0.3; };
+
+// ---------------------------------------------------------------- 공간 규칙
+const SUPPORTS = new Set(['table', 'counter', 'shelf', 'box', 'planter', 'roundTable', 'sofa', 'armchair']);
+const FURNITURE = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'counter', 'prism', 'lathe']);
+const ON_TOP_ONLY = new Set(['monitor', 'laptop']);
+/** 종류별 상식적인 최대 크기(발자국 한 변, 높이) */
+const MAX: Record<string, [number, number]> = {
+  chair: [55, 130], taskChair: [60, 130], stool: [45, 110], plant: [90, 220], lathe: [70, 260], monitor: [90, 70], laptop: [55, 30], armchair: [110, 110],
+};
+type Rect = [number, number, number, number];
+const rectOf = (e: El): Rect => {
+  if (e.kind === 'lathe') { const r = Math.max(8, ...e.points.map((q) => Math.abs(q.a))); return [e.a0 - r, e.a0 + r, e.b0 - r, e.b0 + r]; }
+  let a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1);
+  if (e.points.length) { a0 = Math.min(...e.points.map((q) => q.a)); a1 = Math.max(...e.points.map((q) => q.a)); b0 = Math.min(...e.points.map((q) => q.b)); b1 = Math.max(...e.points.map((q) => q.b)); }
+  if (a1 - a0 < 1 && b1 - b0 < 1) { a0 -= 12; a1 += 12; b0 -= 12; b1 += 12; }
+  return [a0, a1, b0, b1];
+};
+const centerOfEl = (e: El): [number, number] => { const [a0, a1, b0, b1] = rectOf(e); return [(a0 + a1) / 2, (b0 + b1) / 2]; };
+const inRect = ([a, b]: [number, number], r: Rect, m = 0) => a >= r[0] - m && a <= r[1] + m && b >= r[2] - m && b <= r[3] + m;
+function inPoly([a, b]: [number, number], pts: { a: number; b: number }[]) {
+  let c = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const pi = pts[i], pj = pts[j];
+    if ((pi.b > b) !== (pj.b > b) && a < ((pj.a - pi.a) * (b - pi.b)) / (pj.b - pi.b) + pi.a) c = !c;
+  }
+  return c;
+}
+const topOf = (s: El) => s.z + (s.h || ({ table: 74, counter: 90, roundTable: 72, sofa: 40, armchair: 32, box: 30, planter: 40, shelf: 200 } as Record<string, number>)[s.kind] || 0);
+const moveEl = (e: El, da: number, db: number): El => ({ ...e, a0: e.a0 + da, a1: e.a1 + da, b0: e.b0 + db, b1: e.b1 + db, points: e.kind === 'lathe' ? e.points : e.points.map((q) => ({ ...q, a: q.a + da, b: q.b + db })) });
+
+export function groundScene(input: El[]) {
+  let lifted = 0, dropped2floor = 0, pushed = 0, removed = 0, resized = 0;
+  const floors = input.filter((e) => e.kind === 'slab' || (e.kind === 'floor' && e.points.length >= 3));
+  const onFloor = (c: [number, number], m = 25) => !floors.length || floors.some((f) => (f.kind === 'slab' ? inRect(c, rectOf(f), m) : inPoly(c, f.points) || inRect(c, rectOf(f), Math.min(m, 10))));
+  const walls = input.filter((e) => e.kind === 'wall').map(rectOf);
+  const supports = input.filter((e) => SUPPORTS.has(e.kind));
+  const out: El[] = [];
+  for (let e of input) {
+    if (!FURNITURE.has(e.kind)) { out.push(e); continue; }
+    // 비정상 크기
+    const lim = MAX[e.kind];
+    if (lim) {
+      const [a0, a1, b0, b1] = rectOf(e), size = Math.max(a1 - a0, b1 - b0);
+      if (e.kind === 'lathe') {
+        const rmax = Math.max(...e.points.map((q) => Math.abs(q.a)), 1), hmax = Math.max(...e.points.map((q) => q.z), 1);
+        const k = Math.min(1, lim[0] / 2 / rmax, lim[1] / hmax);
+        if (k < 1) { e = { ...e, points: e.points.map((q) => ({ ...q, a: q.a * k, z: q.z * k })) }; resized++; }
+      } else if (size > lim[0] && Math.abs(e.a1 - e.a0) + Math.abs(e.b1 - e.b0) > 0) {
+        const k = lim[0] / size, ca = (e.a0 + e.a1) / 2, cb = (e.b0 + e.b1) / 2;
+        e = { ...e, a0: ca + (e.a0 - ca) * k, a1: ca + (e.a1 - ca) * k, b0: cb + (e.b0 - cb) * k, b1: cb + (e.b1 - cb) * k };
+        resized++;
+      }
+      if (e.h > lim[1]) { e = { ...e, h: lim[1] }; resized++; }
+    }
+    const c = centerOfEl(e);
+    // 건물(바닥) 밖
+    if (!onFloor(c)) { removed++; continue; }
+    // 높이: 받침 위 또는 바닥
+    const under = supports.filter((s) => s !== e && inRect(c, rectOf(s), 4) && topOf(s) <= e.z + 25).sort((x, y) => topOf(y) - topOf(x))[0];
+    if (e.z > 3 || ON_TOP_ONLY.has(e.kind)) {
+      if (under && Math.abs(topOf(under) - e.z) > 0.5) { e = { ...e, z: topOf(under) }; lifted++; }
+      else if (!under) {
+        if (ON_TOP_ONLY.has(e.kind)) { removed++; continue; }
+        e = { ...e, z: 0 }; dropped2floor++;
+      }
+    }
+    // 벽과 겹침: 덜 겹친 방향으로 밀어낸다(바닥에 놓인 것만)
+    if (e.z < 3) {
+      for (const w of walls) {
+        const r = rectOf(e);
+        const oa = Math.min(r[1], w[1]) - Math.max(r[0], w[0]), ob = Math.min(r[3], w[3]) - Math.max(r[2], w[2]);
+        if (oa <= 1 || ob <= 1) continue;
+        // 벽을 벗어나는 네 방향 중, 바닥 위에 남는 가장 짧은 이동
+        const moves: [number, number][] = [[w[1] - r[0] + 1, 0], [w[0] - r[1] - 1, 0], [0, w[3] - r[2] + 1], [0, w[2] - r[3] - 1]];
+        moves.sort((x, y) => Math.abs(x[0]) + Math.abs(x[1]) - Math.abs(y[0]) - Math.abs(y[1]));
+        const ok = moves.find(([da, db]) => onFloor(centerOfEl(moveEl(e, da, db)), -5));
+        if (ok) { e = moveEl(e, ok[0], ok[1]); pushed++; }
+      }
+    }
+    out.push(e);
+  }
+  return { els: out, lifted, dropped2floor, pushed, removed, resized };
+}

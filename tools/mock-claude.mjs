@@ -15,7 +15,7 @@ await page.addInitScript((mode) => {
     const m = prompt.match(/x (\d+)\.\.(\d+), y (\d+)\.\.(\d+)/);
     console.log(`MOCK call ${calls} images=${opts.images.length} sizes=${opts.images.map((b) => Math.round(b.size / 1024) + 'KB').join(',')} band=${m ? m.slice(1).join(',') : 'none'} cont=${prompt.includes('YOU ALREADY')} effort=${opts.effort}`);
     if (mode === 'fail') { await new Promise((r) => setTimeout(r, 300)); throw { code: 'upstream_error', message: 'x' }; }
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 3000));
     const [x0, x1, y0, y1] = m.slice(1).map(Number);
     if (prompt.includes('Current elements in this band, numbered')) {
       // 보정: 0번을 3배로 키우는 수정(막혀야 함), 1번 삭제, 화분 하나 추가
