@@ -1,6 +1,8 @@
 // 변환 화면: 업로드 → 투시 교정(워커) → AI 초안 → AI 자가 보정 N회 → 결과.
 import { loadIntoEditor, openKeyDialog, showEditorFit } from './main';
-import { runAI, getKey, describeError } from './ai';
+import { runAI, describeError, aiMode, hostedInClaude } from './ai';
+import { saveFile } from './platform';
+import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { renderSVG } from './iso';
 import { newId, type El, type Scene } from './schema';
@@ -24,13 +26,19 @@ let result: Scene | null = null;
 let abort: AbortController | null = null;
 let svgUrl: string | null = null;
 
-function keyState() {
-  $('keyState').innerHTML = getKey()
-    ? 'API 키 설정됨 · 변환 1회에 대략 1~2달러(보정 2회 기준)'
-    : 'AI 변환에는 Anthropic API 키가 필요해요 · <a href="#" id="lnkKey">키 넣기</a>';
+async function keyState() {
+  const mode = await aiMode();
+  $('btnKey2').hidden = mode === 'subscription';
+  $('keyState').innerHTML = mode === 'subscription'
+    ? 'Claude 구독으로 실행돼요 · 처음 한 번 사용 허용 창이 떠요'
+    : mode === 'key'
+      ? 'API 키 설정됨 · 변환 1회에 대략 1~2달러(보정 2회 기준)'
+      : hostedInClaude()
+        ? 'Claude 연결을 확인하는 중이에요…'
+        : 'AI 변환에는 Anthropic API 키가 필요해요 · <a href="#" id="lnkKey">키 넣기</a>';
   document.getElementById('lnkKey')?.addEventListener('click', (e) => { e.preventDefault(); openKeyDialog(); });
 }
-window.addEventListener('iso:key', keyState);
+window.addEventListener('iso:key', () => void keyState());
 window.addEventListener('iso:back', () => show(result ? 'result' : 'upload'));
 $('btnKey2').onclick = openKeyDialog;
 $('btnOpenEditor').onclick = () => show('editor');
@@ -50,14 +58,44 @@ function mark(k: StepKey, state: 'now' | 'done' | 'fail') {
 const msg = (t: string) => { $('runMsg').textContent = t; };
 
 // ---------------------------------------------------------------- perspective correction (worker)
-function rectify(img: HTMLImageElement): Promise<{ url: string; stats: { lines: number; before: number; after: number } }> {
+const OPENCV_CDN = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js';
+let cvGlobal: Promise<unknown> | null = null;
+/** claude.ai 아티팩트: 허용된 CDN에서 OpenCV를 불러와 메인 스레드에서 쓴다 */
+function loadCvFromCdn() {
+  return (cvGlobal ??= new Promise<unknown>((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = OPENCV_CDN; s.async = true;
+    s.onload = () => resolve(readyCv((window as unknown as { cv: unknown }).cv));
+    s.onerror = () => { cvGlobal = null; reject(new Error('OpenCV를 불러오지 못했어요. 네트워크를 확인해 주세요.')); };
+    document.head.appendChild(s);
+  }));
+}
+
+function imageRGBA(img: HTMLImageElement) {
+  const cv = document.createElement('canvas');
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.drawImage(img, 0, 0);
+  return g.getImageData(0, 0, cv.width, cv.height);
+}
+function rgbaToUrl(data: ArrayBuffer, w: number, h: number) {
+  const c2 = document.createElement('canvas');
+  c2.width = w; c2.height = h;
+  c2.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
+  return c2.toDataURL('image/png');
+}
+
+async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: { lines: number; before: number; after: number } }> {
+  if (hostedInClaude()) {
+    msg('OpenCV를 불러오는 중… (처음 한 번은 몇 초 걸려요)');
+    const cv = await loadCvFromCdn();
+    const id = imageRGBA(img);
+    const r = await rectifyRGBA(cv, id.data.buffer, id.width, id.height, msg);
+    return { url: rgbaToUrl(r.data, r.width, r.height), stats: r.stats };
+  }
   return new Promise((resolve, reject) => {
-    const cv = document.createElement('canvas');
-    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
-    const g = cv.getContext('2d')!;
-    g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
-    g.drawImage(img, 0, 0);
-    const id = g.getImageData(0, 0, cv.width, cv.height);
+    const id = imageRGBA(img);
     const w = new Worker(new URL('./convert/worker.js', import.meta.url), { type: 'module' });
     abort?.signal.addEventListener('abort', () => { w.terminate(); reject(new DOMException('중단', 'AbortError')); });
     w.onmessage = (ev) => {
@@ -66,10 +104,7 @@ function rectify(img: HTMLImageElement): Promise<{ url: string; stats: { lines: 
       else if (d.type === 'error') { w.terminate(); reject(new Error(`투시 교정 실패: ${d.message}`)); }
       else if (d.type === 'done') {
         w.terminate();
-        const c2 = document.createElement('canvas');
-        c2.width = d.width; c2.height = d.height;
-        c2.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(d.data), d.width, d.height), 0, 0);
-        resolve({ url: c2.toDataURL('image/png'), stats: d.stats });
+        resolve({ url: rgbaToUrl(d.data, d.width, d.height), stats: d.stats });
       }
     };
     w.onerror = (e) => { w.terminate(); reject(new Error(`투시 교정 실패: ${e.message}`)); };
@@ -93,7 +128,7 @@ async function aiPass(current: El[] | null, label: string, t0: number): Promise<
 }
 
 async function convert(file: File) {
-  if (!getKey()) { openKeyDialog(); return; }
+  if (!(await aiMode())) { openKeyDialog(); return; }
   const rounds = +($('selRounds') as HTMLSelectElement).value;
   abort = new AbortController();
   const t0 = performance.now();
@@ -183,15 +218,13 @@ $('btnStop').onclick = () => {
 };
 $('btnResSvg').onclick = () => {
   if (!result) return;
-  const url = URL.createObjectURL(new Blob([renderSVG(result)], { type: 'image/svg+xml' }));
-  const a = document.createElement('a'); a.href = url; a.download = 'iso-drawing.svg'; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  void saveFile('iso-drawing.svg', renderSVG(result), 'image/svg+xml');
 };
 $('btnResEdit').onclick = async () => { if (result) { await loadIntoEditor(result, rectUrl); show('editor'); } };
 $('btnResNew').onclick = () => show('upload');
 $('btnResMore').onclick = async () => {
   if (!result || !rectImg) return;
-  if (!getKey()) { openKeyDialog(); return; }
+  if (!(await aiMode())) { openKeyDialog(); return; }
   abort = new AbortController();
   const t0 = performance.now();
   $('steps').innerHTML = '<li data-k="fix1">AI 자가 보정</li><li data-k="done">마무리</li>';
@@ -209,5 +242,5 @@ $('btnResMore').onclick = async () => {
   } finally { abort = null; }
 };
 
-keyState();
+void keyState();
 show('upload');

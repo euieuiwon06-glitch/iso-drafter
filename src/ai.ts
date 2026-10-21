@@ -2,7 +2,8 @@
 // API 키는 사용자의 브라우저(localStorage)에만 저장되고 Anthropic API로 직접 전송된다.
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
-import { SceneSchema, type El } from './schema';
+import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
+import { getSample, inClaude } from './platform';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -49,6 +50,7 @@ export async function runAI(opts: {
   original: string; gridded: string; width: number; height: number;
   current?: El[]; onProgress?: Progress; signal?: AbortSignal;
 }): Promise<El[]> {
+  if (await getSample()) return runSample(opts);
   const key = getKey();
   if (!key) throw new Error('API 키가 없어요. 오른쪽 위 ⚙에서 키를 먼저 넣어 주세요.');
   const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
@@ -91,6 +93,84 @@ export async function runAI(opts: {
   if (!parsed) throw new Error('AI 응답을 장면 데이터로 읽지 못했어요. 다시 시도해 주세요.');
   return parsed.elements;
 }
+
+// ---------------------------------------------------------------- claude.ai 아티팩트: 보는 사람의 Claude 구독으로 호출
+/** 쓸 수 있는 AI 경로: 구독(아티팩트) / API 키 / 없음 */
+export async function aiMode(): Promise<'subscription' | 'key' | null> {
+  if (await getSample()) return 'subscription';
+  return getKey() ? 'key' : null;
+}
+export const hostedInClaude = inClaude;
+
+// 한 줄에 요소 하나(JSON 배열). 응답이 길이 한도에서 잘려도 완성된 줄은 살릴 수 있다.
+const LINE_FORMAT = `OUTPUT FORMAT (strict): reply with one element per line, each line a JSON array, nothing else - no prose, no code fence:
+[kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points]
+kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for route/floor, else [].
+Example line: ["table",1990,2460,240,330,0,72,0,0,"+b","white","meeting table",[]]`;
+
+const blobOf = async (dataUrl: string) => (await fetch(dataUrl)).blob();
+
+function parseLines(text: string): El[] {
+  const out: El[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().replace(/,$/, '');
+    if (!line.startsWith('[')) continue;
+    try {
+      const v = JSON.parse(line);
+      if (!Array.isArray(v) || v.length < 12) continue;
+      const [kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points] = v;
+      const el = SceneSchema.shape.elements.element.safeParse({
+        kind, a0: +a0, a1: +a1, b0: +b0, b1: +b1, z: +z, h: +h, n: +n, m: +m,
+        dir: DIRS.includes(dir) ? dir : '+b', color: COLORS.includes(color) ? color : 'white', note: String(note ?? ''),
+        points: Array.isArray(points) ? points.filter((p: unknown) => Array.isArray(p) && p.length >= 2).map((p: number[]) => ({ a: +p[0], b: +p[1], z: +(p[2] ?? 0) })) : [],
+      });
+      if (el.success) out.push(el.data);
+    } catch { /* 잘린 마지막 줄 등은 건너뜀 */ }
+  }
+  return out;
+}
+
+async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
+  const sample = (await getSample())!;
+  const refine = !!opts.current?.length;
+  const cur = refine ? opts.current!.map((e) => JSON.stringify([e.kind, e.a0, e.a1, e.b0, e.b1, e.z, e.h, e.n, e.m, e.dir, e.color, e.note, e.points.map((q) => [q.a, q.b, q.z])])).join('\n') : '';
+  const task = refine
+    ? `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original. Image 2 is the original with the isometric grid AND the CURRENT scene drawn in red on top.\nCurrent scene, one element per line:\n${cur}\n\nCompare the red lines with the original and output the FULL corrected scene: move/resize elements whose red outline does not sit on the original, add anything missing, delete anything that does not exist, keep correct elements unchanged.`
+    : `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original drawing. Image 2 is the same image with the isometric grid. Build the complete scene for this drawing.`;
+  const prompt = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
+  opts.onProgress?.(refine ? 'AI가 현재 장면을 원본과 비교하는 중… (처음 실행이면 Claude 사용 허용 창이 떠요)' : 'AI가 원본을 읽고 초안을 만드는 중… (처음 실행이면 Claude 사용 허용 창이 떠요)');
+  try {
+    const { text, truncated } = await sample(prompt, {
+      images: [await blobOf(opts.original), await blobOf(opts.gridded)],
+      modelTier: 'complex', effort: 'high', cache: false, signal: opts.signal,
+      onText: ({ text }: { text: string }) => opts.onProgress?.(`장면 데이터를 받는 중… 요소 ${text.split('\n').filter((l) => l.trim().startsWith('[')).length}개`),
+    });
+    const els = parseLines(text);
+    if (!els.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
+    if (truncated && refine && els.length < opts.current!.length * 0.6) return opts.current!;   // 많이 잘린 보정은 버린다
+    return els;
+  } catch (e) {
+    const err = e as { code?: string; message?: string; text?: string };
+    if (!err.code) throw e;
+    if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
+    const partial = err.text ? parseLines(err.text) : [];
+    if (partial.length > 20 && !refine) return partial;
+    throw new Error(SAMPLE_ERR[err.code] ?? `Claude 호출 실패 (${err.code})`);
+  }
+}
+
+const SAMPLE_ERR: Record<string, string> = {
+  not_granted: '이 페이지가 Claude를 쓰도록 허용되지 않았어요. 아티팩트 오른쪽 위 메뉴의 권한에서 허용해 주세요.',
+  sampling_disabled: '이 계정에서는 아티팩트의 Claude 호출을 쓸 수 없어요.',
+  rate_limited: 'Claude 사용 한도에 걸렸어요. 잠시 뒤에 다시 시도해 주세요.',
+  session_expired: 'claude.ai 로그인이 만료됐어요. 다시 로그인해 주세요.',
+  images_unavailable: '이 화면에서는 이미지를 Claude에게 보낼 수 없어요.',
+  image_rejected: '이미지를 보낼 수 없어요. 다른 파일로 시도해 주세요.',
+  refused: 'Claude가 이 요청을 처리하지 않았어요.',
+  prompt_too_large: '장면이 너무 커서 보낼 수 없어요.',
+  empty_completion: 'Claude가 아무것도 돌려주지 않았어요. 다시 시도해 주세요.',
+  upstream_error: '연결이 끊겼어요. 다시 시도해 주세요.',
+};
 
 export function describeError(err: unknown): string {
   if (err instanceof Anthropic.AuthenticationError) return 'API 키가 올바르지 않아요. ⚙에서 키를 확인해 주세요.';

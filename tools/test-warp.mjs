@@ -17,7 +17,7 @@ const segs = detectSegments(cv, gray); const kept = classify(segs);
 console.log('segments', segs.length, 'kept', kept.length, [0, 1, 2].map((f) => kept.filter((s) => s.target === [90, 150, 30][f]).length), Date.now() - t, 'ms');
 const before = kept.map((s) => Math.abs(((s.ang - s.target + 270) % 180) - 90));
 t = Date.now();
-const mesh = fitMesh(src.cols, src.rows, kept);
+const mesh = await fitMesh(src.cols, src.rows, kept);
 console.log('mesh', mesh.nx, 'x', mesh.ny, Date.now() - t, 'ms');
 const res = residualAngles(mesh, kept).sort((a, b) => a - b), bs = before.sort((a, b) => a - b);
 const q = (a, p) => a[Math.floor(a.length * p)].toFixed(2);

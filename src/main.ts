@@ -1,7 +1,9 @@
 import { KINDS, KIND_LABEL, COLORS, DIRS, defaults, newId, type El, type Kind, type Scene } from './schema';
 import { renderElement, renderSVG, P, screenDeltaToAB, screenToAB, C, S } from './iso';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
-import { runAI, describeError, getKey, setKey } from './ai';
+import { runAI, describeError, getKey, setKey, aiMode } from './ai';
+import { askConfirm, saveFile } from './platform';
+import sampleScene from './sample-scene.json';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const NS = 'http://www.w3.org/2000/svg';
@@ -378,7 +380,7 @@ $('btnRedo').onclick = doRedo;
   underUrl = url; underImg = img;
   const sizeChanged = img.naturalWidth !== scene.width || img.naturalHeight !== scene.height;
   scene.width = img.naturalWidth; scene.height = img.naturalHeight;
-  if (sizeChanged && scene.elements.length && !confirm('새 이미지의 크기가 달라요. 지금 장면을 유지할까요? (취소 = 장면 비우기)')) scene.elements = [];
+  if (sizeChanged && scene.elements.length && !(await askConfirm('새 이미지의 크기가 지금 장면과 달라요. 장면을 그대로 둘까요?', '그대로 두기', '장면 비우기'))) scene.elements = [];
   fullRender(); fitView(); commit(before);
   status(`밑그림: ${file.name} (${img.naturalWidth}×${img.naturalHeight}). ‘AI 초안’으로 시작하거나 왼쪽에서 요소를 직접 추가하세요.`);
   (ev.target as HTMLInputElement).value = '';
@@ -386,25 +388,19 @@ $('btnRedo').onclick = doRedo;
 
 $('btnSample').onclick = async () => {
   const before = snapshot();
-  const res = await fetch(`${import.meta.env.BASE_URL}sample-scene.json`);
-  const data = await res.json() as Scene;
+  const data = sampleScene as Scene;
   scene = { ...data, elements: ensureIds(data.elements) };
   selId = null; fullRender(); fitView(); commit(before);
   status('예시 장면을 불러왔어요. 요소를 클릭해서 움직여 보세요.');
 };
 
-$('btnClear').onclick = () => {
-  if (scene.elements.length && !confirm('장면을 비울까요? (되돌리기로 복구할 수 있어요)')) return;
+$('btnClear').onclick = async () => {
+  if (scene.elements.length && !(await askConfirm('장면을 비울까요? 되돌리기로 복구할 수 있어요.', '비우기'))) return;
   const before = snapshot(); scene.elements = []; selId = null; fullRender(); commit(before);
 };
 
-function download(name: string, text: string, type: string) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-$('btnSvg').onclick = () => download('iso-drawing.svg', renderSVG(scene, { wscale }), 'image/svg+xml');
-$('btnJson').onclick = () => download('iso-scene.json', JSON.stringify({ ...scene, elements: scene.elements.map(({ id: _id, ...e }) => e) }, null, 1), 'application/json');
+$('btnSvg').onclick = () => saveFile('iso-drawing.svg', renderSVG(scene, { wscale }), 'image/svg+xml');
+$('btnJson').onclick = () => saveFile('iso-scene.json', JSON.stringify({ ...scene, elements: scene.elements.map(({ id: _id, ...e }) => e) }, null, 1), 'application/json');
 ($('fileJson') as HTMLInputElement).onchange = async (ev) => {
   const file = (ev.target as HTMLInputElement).files?.[0]; if (!file) return;
   try {
@@ -429,7 +425,7 @@ dlg.addEventListener('close', () => {
 // ---------------------------------------------------------------- AI
 async function ai(refine: boolean) {
   if (!underImg) { status('먼저 ‘이미지 열기’로 원본을 올려 주세요.', 'err'); return; }
-  if (!getKey()) { $('btnKey').click(); return; }
+  if (!(await aiMode())) { $('btnKey').click(); return; }
   if (refine && !scene.elements.length) { status('보정할 장면이 없어요. 먼저 ‘AI 초안’을 만들어 주세요.', 'err'); return; }
   const btns = ['btnDraft', 'btnRefine'].map((id) => $(id) as HTMLButtonElement);
   btns.forEach((b) => (b.disabled = true));
@@ -459,8 +455,8 @@ async function ai(refine: boolean) {
     aiAbort = null;
   }
 }
-$('btnDraft').onclick = () => {
-  if (scene.elements.length && !confirm('AI 초안이 지금 장면을 대체해요. 계속할까요? (되돌리기로 복구 가능)')) return;
+$('btnDraft').onclick = async () => {
+  if (scene.elements.length && !(await askConfirm('AI 초안이 지금 장면을 대체해요. 되돌리기로 복구할 수 있어요.', '초안 만들기'))) return;
   void ai(false);
 };
 $('btnRefine').onclick = () => void ai(true);

@@ -6,7 +6,7 @@
   <title>ISO DRAFTER</title>
   <meta name="description" content="이미지를 깔끔한 등각(아이소메트릭) 도면 SVG로 다시 그리는 에디터" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
@@ -137,6 +137,13 @@
         <button class="btn" value="cancel">닫기</button>
         <button class="btn primary" value="save" id="btnKeySave">저장</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlgConfirm">
+    <form method="dialog">
+      <p></p>
+      <div class="row"><span class="spacer"></span><button class="btn" value="cancel">취소</button><button class="btn primary" value="ok">계속</button></div>
     </form>
   </dialog>
 

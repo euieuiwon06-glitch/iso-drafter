@@ -33,7 +33,7 @@ export function classify(segs) {
 }
 
 /** 희소 최소제곱(CGLS)로 메시 꼭짓점 위치를 푼다. */
-export function fitMesh(W, H, segs, opts = {}) {
+export async function fitMesh(W, H, segs, opts = {}) {
   const h = opts.cell ?? Math.max(32, Math.round(Math.max(W, H) / 54));
   const nx = Math.ceil(W / h) + 1, ny = Math.ceil(H / h) + 1, N = nx * ny, NU = 2 * N;
   const vid = (i, j) => j * nx + i;
@@ -88,6 +88,7 @@ export function fitMesh(W, H, segs, opts = {}) {
   let s = ATy(r), p = s.slice(), gamma = s.reduce((t, v) => t + v * v, 0);
   const g0 = gamma, iters = opts.iters ?? 4000;
   for (let it = 0; it < iters && gamma > g0 * 1e-14; it++) {
+    if (it % 60 === 59) await new Promise((r) => setTimeout(r, 0));   // 메인 스레드에서 돌 때 화면이 멈추지 않게
     const q = Ax(p);
     const alpha = gamma / q.reduce((t, v) => t + v * v, 0);
     for (let m = 0; m < NU; m++) x[m] += alpha * p[m];
