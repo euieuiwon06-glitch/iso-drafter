@@ -46,27 +46,63 @@ $('btnOpenEditor').onclick = () => show('editor');
 
 // ---------------------------------------------------------------- steps UI
 type StepKey = 'rect' | 'draft' | `fix${number}` | 'done';
-function setSteps(rounds: number) {
-  const items: [StepKey, string][] = [['rect', '투시 교정'], ['draft', 'AI 해석 · 재작도']];
-  for (let i = 1; i <= rounds; i++) items.push([`fix${i}`, `AI 자가 보정 ${i}/${rounds}`]);
-  items.push(['done', '마무리']);
-  $('steps').innerHTML = items.map(([k, t]) => `<li data-k="${k}">${t}</li>`).join('');
+type Stats = { lines: number; before: number; after: number };
+
+// 단계별 예상 시간(초). 구독 호출 기준 관측치에 여유를 둔 범위.
+const ETA = { rect: [5, 20], draft: [90, 240], fix: [60, 180], done: [1, 2] } as const;
+const etaOf = (k: string): readonly [number, number] => (k === 'rect' ? ETA.rect : k === 'draft' ? ETA.draft : k === 'done' ? ETA.done : ETA.fix);
+const fmt = (sec: number) => (sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분${Math.round(sec % 60) ? ` ${Math.round(sec % 60)}초` : ''}`);
+const fmtRange = ([a, b]: readonly [number, number]) => (b < 60 ? `${a}~${b}초` : `${Math.round(a / 60 * 2) / 2}~${Math.round(b / 60 * 2) / 2}분`);
+
+let stepKeys: StepKey[] = [];
+let curStep: StepKey | null = null;
+let stepT0 = 0;
+let lastSignal = 0;          // AI에서 마지막으로 소식이 온 시각
+let lastMsg = '';
+let ticker: number | undefined;
+
+function setSteps(keys: StepKey[], rounds: number) {
+  stepKeys = keys;
+  const label = (k: StepKey) => (k === 'rect' ? '투시 교정' : k === 'draft' ? 'AI 해석 · 재작도' : k === 'done' ? '마무리' : `AI 자가 보정 ${k.slice(3)}/${rounds}`);
+  $('steps').innerHTML = keys.map((k) => `<li data-k="${k}"><span class="t">${label(k)}</span><span class="eta">예상 ${fmtRange(etaOf(k))}</span></li>`).join('');
 }
+function li(k: StepKey) { return $('steps').querySelector<HTMLLIElement>(`li[data-k="${k}"]`); }
+
 function mark(k: StepKey, state: 'now' | 'done' | 'fail') {
-  const li = $('steps').querySelector<HTMLLIElement>(`li[data-k="${k}"]`);
-  if (li) li.className = state;
-  const all = [...$('steps').querySelectorAll('li')];
-  const i = all.findIndex((x) => x.dataset.k === k);
-  if (state === 'fail') { setBusy(null); return; }
-  // 각 단계의 무게: 교정 1, AI 단계마다 3, 마무리 0.3
-  const w = all.map((x) => (x.dataset.k === 'rect' ? 1 : x.dataset.k === 'done' ? 0.3 : 3));
+  const el = li(k);
+  if (el) el.className = state;
+  if (state === 'now') { curStep = k; stepT0 = performance.now(); lastSignal = stepT0; tick(); }
+  if (state === 'done' && el) { el.querySelector('.eta')!.textContent = `${fmt((performance.now() - stepT0) / 1000)} 걸림`; curStep = null; }
+  if (state === 'fail') { if (el) el.querySelector('.eta')!.textContent = '여기서 멈춤'; curStep = null; setBusy(null); return; }
+  const i = stepKeys.indexOf(k);
+  const w = stepKeys.map((x) => etaOf(x)[1]);
   const total = w.reduce((a, b) => a + b, 0);
   const start = w.slice(0, i).reduce((a, b) => a + b, 0);
   if (k === 'done' && state === 'done') setBusy(null);
   else if (state === 'done') setBusy((start + w[i]) / total);
-  else setBusy((start + w[i] * 0.05) / total, (start + w[i] * 0.92) / total);
+  else setBusy((start + w[i] * 0.03) / total, (start + w[i] * 0.95) / total);
 }
-const msg = (t: string) => { $('runMsg').textContent = t; };
+
+/** 1초마다: 현재 단계 경과/예상, 남은 전체 시간, 조용한 구간 안내 */
+function tick() {
+  const now = performance.now();
+  if (curStep) {
+    const el = li(curStep), sec = (now - stepT0) / 1000, [lo, hi] = etaOf(curStep);
+    if (el) el.querySelector('.eta')!.textContent = `${fmt(sec)} 경과 · 예상 ${fmtRange([lo, hi])}`;
+    const rest = stepKeys.slice(stepKeys.indexOf(curStep) + 1).filter((k) => li(k)?.className !== 'done');
+    const remLo = Math.max(0, lo - sec) + rest.reduce((a, k) => a + etaOf(k)[0], 0);
+    const remHi = Math.max(10, hi - sec) + rest.reduce((a, k) => a + etaOf(k)[1], 0);
+    $('etaTotal').textContent = `남은 예상 시간 ${fmtRange([Math.round(remLo), Math.round(remHi)])}`;
+    const quiet = (now - lastSignal) / 1000;
+    $('runMsg').textContent = lastMsg + (curStep !== 'rect' && quiet > 15
+      ? `\nClaude가 생각하는 동안에는 화면 변화가 없어도 정상이에요(${fmt(quiet)}째). 이 탭을 닫거나 새로고침하지 마세요.`
+      : '');
+  }
+}
+function startTicker() { clearInterval(ticker); ticker = window.setInterval(tick, 1000); }
+function stopTicker() { clearInterval(ticker); ticker = undefined; $('etaTotal').textContent = ''; }
+
+const msg = (t: string) => { lastMsg = t; lastSignal = performance.now(); $('runMsg').textContent = t; };
 
 // ---------------------------------------------------------------- perspective correction (worker)
 const OPENCV_CDN = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js';
@@ -94,10 +130,10 @@ function rgbaToUrl(data: ArrayBuffer, w: number, h: number) {
   const c2 = document.createElement('canvas');
   c2.width = w; c2.height = h;
   c2.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
-  return c2.toDataURL('image/png');
+  return c2.toDataURL('image/jpeg', 0.92);
 }
 
-async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: { lines: number; before: number; after: number } }> {
+async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Stats }> {
   if (hostedInClaude()) {
     msg('OpenCV를 불러오는 중… (처음 한 번은 몇 초 걸려요)');
     const cv = await loadCvFromCdn();
@@ -126,58 +162,98 @@ async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: { l
 // ---------------------------------------------------------------- AI passes
 const withIds = (els: El[]) => els.map((e) => ({ ...e, id: newId() }));
 
-async function aiPass(current: El[] | null, label: string, t0: number): Promise<El[]> {
+async function aiPass(current: El[] | null, label: string): Promise<El[]> {
   const original = await imageToJpeg(rectImg!);
   const overlay = current ? renderSVG({ width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: current }, { wscale: 2, bg: null }) : null;
   const { dataUrl: gridded } = await griddedImage(rectImg!, overlay);
   return runAI({
     original, gridded, width: rectImg!.naturalWidth, height: rectImg!.naturalHeight,
     current: current ?? undefined,
-    onProgress: (m) => msg(`${label}: ${m} · ${Math.round((performance.now() - t0) / 1000)}초`),
+    onProgress: (m) => msg(`${label}: ${m}`),
     signal: abort!.signal,
   });
 }
 
+// ---------------------------------------------------------------- 작업(단계별 저장 → 실패·새로고침 후 이어서)
+type Job = { rounds: number; rectUrl: string | null; stats: Stats; els: El[] | null; done: StepKey[]; t0: number };
+const JOB_KEY = 'iso-drafter:job';
+let job: Job | null = null;
+const saveJob = () => { try { localStorage.setItem(JOB_KEY, JSON.stringify(job)); } catch { /* 용량 초과 등: 이어하기만 안 됨 */ } };
+const loadJob = (): Job | null => { try { const v = localStorage.getItem(JOB_KEY); return v ? (JSON.parse(v) as Job) : null; } catch { return null; } };
+const clearJob = () => { try { localStorage.removeItem(JOB_KEY); } catch { /* 무시 */ } };
+
+const keysFor = (rounds: number): StepKey[] => ['rect', 'draft', ...Array.from({ length: rounds }, (_, i) => `fix${i + 1}` as StepKey), 'done'];
+
 async function convert(file: File) {
   if (!(await aiMode())) { openKeyDialog(); return; }
   const rounds = +($('selRounds') as HTMLSelectElement).value;
-  abort = new AbortController();
-  const t0 = performance.now();
-  setSteps(rounds);
-  show('run');
   const srcUrl = await new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(file); });
-  ($('runImg') as HTMLImageElement).src = srcUrl;
+  job = { rounds, rectUrl: null, stats: { lines: 0, before: 0, after: 0 }, els: null, done: [], t0: Date.now() };
+  await runJob(srcUrl);
+}
+
+/** 남은 단계를 순서대로 실행한다. 이미 끝난 단계는 건너뛴다. */
+async function runJob(srcUrl?: string) {
+  if (!job) return;
+  if (!(await aiMode())) { openKeyDialog(); return; }
+  abort = new AbortController();
+  const keys = keysFor(job.rounds);
+  setSteps(keys, job.rounds);
+  for (const k of job.done) mark(k, 'done'), li(k)!.querySelector('.eta')!.textContent = '완료';
+  $('btnResume').hidden = true;
+  ($('btnStop') as HTMLButtonElement).textContent = '중단';
+  show('run');
+  startTicker();
+  if (job.rectUrl) { rectUrl = job.rectUrl; rectImg = await loadImage(job.rectUrl); }
+  ($('runImg') as HTMLImageElement).src = job.els ? '' : (job.rectUrl ?? srcUrl ?? '');
+  if (job.els) showPreview(job.els);
   let step: StepKey = 'rect';
   try {
-    mark('rect', 'now');
-    const { url, stats } = await rectify(await loadImage(srcUrl));
-    rectUrl = url; rectImg = await loadImage(url);
-    ($('runImg') as HTMLImageElement).src = url;
-    mark('rect', 'done');
-
-    step = 'draft'; mark('draft', 'now');
-    let els = await aiPass(null, 'AI 해석', t0);
-    showPreview(els);
-    mark('draft', 'done');
-
-    for (let i = 1; i <= rounds; i++) {
-      step = `fix${i}`; mark(step, 'now');
-      els = await aiPass(els, `보정 ${i}/${rounds}`, t0);
-      showPreview(els);
-      mark(step, 'done');
+    for (const k of keys) {
+      if (job.done.includes(k)) continue;
+      step = k; mark(k, 'now');
+      if (k === 'rect') {
+        if (!srcUrl) throw new Error('원본 이미지가 없어요. 이미지를 다시 올려 주세요.');
+        const { url, stats } = await rectify(await loadImage(srcUrl));
+        job.rectUrl = url; job.stats = stats;
+        rectUrl = url; rectImg = await loadImage(url);
+        ($('runImg') as HTMLImageElement).src = url;
+      } else if (k === 'draft') {
+        job.els = await aiPass(null, 'AI 해석');
+        showPreview(job.els);
+      } else if (k !== 'done') {
+        job.els = await aiPass(job.els, `보정 ${k.slice(3)}/${job.rounds}`);
+        showPreview(job.els);
+      }
+      mark(k, 'done');
+      job.done.push(k); saveJob();
     }
-    step = 'done'; mark('done', 'done');
-    finish(els, stats, Math.round((performance.now() - t0) / 1000));
+    clearJob();
+    finish(job.els!, job.stats, Math.round((Date.now() - job.t0) / 1000));
   } catch (err) {
     mark(step, 'fail');
     const aborted = (err as Error)?.name === 'AbortError' || abort?.signal.aborted;
-    msg(aborted ? '중단했어요.' : describeError(err));
+    msg(aborted ? '중단했어요. 끝난 단계는 저장돼 있어요.' : `${describeError(err)}\n끝난 단계는 저장돼 있어서 이 단계부터 다시 할 수 있어요.`);
+    $('btnResume').hidden = !job.rectUrl;
     ($('btnStop') as HTMLButtonElement).textContent = '처음으로';
   } finally {
     abort = null;
+    stopTicker();
     setBusy(null);
   }
 }
+
+function offerResume() {
+  const saved = loadJob();
+  $('resumeBox').hidden = !saved?.rectUrl;
+  if (saved?.rectUrl) {
+    const total = keysFor(saved.rounds).length;
+    $('resumeText').textContent = `지난 변환이 중간에 멈췄어요 (${total}단계 중 ${saved.done.length}단계 완료).`;
+  }
+}
+$('btnResumeJob').onclick = () => { job = loadJob(); $('resumeBox').hidden = true; void runJob(); };
+$('btnDiscardJob').onclick = () => { clearJob(); $('resumeBox').hidden = true; };
+$('btnResume').onclick = () => void runJob();
 
 /** 진행 중에도 지금까지의 재작도를 미리 보여 준다. */
 function showPreview(els: El[]) {
@@ -188,7 +264,7 @@ function showPreview(els: El[]) {
   ($('runImg') as HTMLImageElement).src = svgUrl;
 }
 
-function finish(els: El[], stats: { lines: number; before: number; after: number }, secs: number) {
+function finish(els: El[], stats: Stats, secs: number) {
   result = { width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: withIds(els) };
   renderResult();
   $('resStats').textContent =
@@ -226,33 +302,37 @@ drop.addEventListener('drop', (e) => {
 });
 $('btnStop').onclick = () => {
   if (abort) abort.abort();
-  else { ($('btnStop') as HTMLButtonElement).textContent = '중단'; show(result ? 'result' : 'upload'); }
+  else { ($('btnStop') as HTMLButtonElement).textContent = '중단'; offerResume(); show(result ? 'result' : 'upload'); }
 };
 $('btnResSvg').onclick = () => {
   if (!result) return;
   void saveFile('iso-drawing.svg', renderSVG(result), 'image/svg+xml');
 };
 $('btnResEdit').onclick = async () => { if (result) { await loadIntoEditor(result, rectUrl); show('editor'); } };
-$('btnResNew').onclick = () => show('upload');
+$('btnResNew').onclick = () => { offerResume(); show('upload'); };
 $('btnResMore').onclick = async () => {
   if (!result || !rectImg) return;
   if (!(await aiMode())) { openKeyDialog(); return; }
   abort = new AbortController();
-  const t0 = performance.now();
-  $('steps').innerHTML = '<li data-k="fix1">AI 자가 보정</li><li data-k="done">마무리</li>';
+  const t0 = Date.now();
+  setSteps(['fix1', 'done'], 1);
+  li('fix1')!.querySelector('.t')!.textContent = 'AI 자가 보정';
   ($('runImg') as HTMLImageElement).src = svgUrl ?? '';
+  $('btnResume').hidden = true;
   show('run');
+  startTicker();
   try {
     mark('fix1', 'now');
-    const els = await aiPass(result.elements, '추가 보정', t0);
+    const els = await aiPass(result.elements, '추가 보정');
     mark('fix1', 'done'); mark('done', 'done');
-    finish(els, { lines: 0, before: 0, after: 0 }, Math.round((performance.now() - t0) / 1000));
+    finish(els, { lines: 0, before: 0, after: 0 }, Math.round((Date.now() - t0) / 1000));
   } catch (err) {
     mark('fix1', 'fail');
     msg((err as Error)?.name === 'AbortError' ? '중단했어요.' : describeError(err));
     ($('btnStop') as HTMLButtonElement).textContent = '돌아가기';
-  } finally { abort = null; setBusy(null); }
+  } finally { abort = null; stopTicker(); setBusy(null); }
 };
 
 void keyState();
+offerResume();
 show('upload');

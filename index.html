@@ -26,6 +26,11 @@
         <h1>아이소메트릭 그림을 올리면<br>투시를 바로잡고 도면처럼 다시 그려 드려요</h1>
         <p>AI가 생성한 이미지처럼 끝점이나 투시가 어긋난 그림도 정확한 등각 축 위에 벽·바닥·가구·동선을 새로 그려 SVG로 만들어요.</p>
       </div>
+      <div class="resume" id="resumeBox" hidden>
+        <span id="resumeText"></span>
+        <button class="btn primary" id="btnResumeJob">이어서 하기</button>
+        <button class="btn" id="btnDiscardJob">지우기</button>
+      </div>
       <label class="drop" id="drop">
         <input id="fileConvert" type="file" accept="image/*" hidden />
         <b>이미지를 끌어다 놓거나 클릭해서 선택</b>
@@ -43,9 +48,13 @@
       <div class="run-preview"><img id="runImg" alt="" /></div>
       <div class="run-side">
         <h2>변환 중</h2>
+        <p class="eta-total" id="etaTotal"></p>
         <ol id="steps" class="steps"></ol>
         <p class="muted" id="runMsg"></p>
-        <button class="btn" id="btnStop">중단</button>
+        <div class="stack">
+          <button class="btn primary" id="btnResume" hidden>이 단계부터 다시</button>
+          <button class="btn" id="btnStop">중단</button>
+        </div>
       </div>
     </section>
 

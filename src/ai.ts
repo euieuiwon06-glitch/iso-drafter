@@ -138,33 +138,46 @@ function parseLines(text: string): El[] {
   return out;
 }
 
+const lineOf = (e: El) => JSON.stringify([e.kind, e.a0, e.a1, e.b0, e.b1, e.z, e.h, e.n, e.m, e.dir, e.color, e.note, e.points.map((q) => [q.a, q.b, q.z])]);
+const countLines = (t: string) => t.split('\n').filter((l) => l.trim().startsWith('[')).length;
+
 async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   const sample = (await getSample())!;
   const refine = !!opts.current?.length;
-  const cur = refine ? opts.current!.map((e) => JSON.stringify([e.kind, e.a0, e.a1, e.b0, e.b1, e.z, e.h, e.n, e.m, e.dir, e.color, e.note, e.points.map((q) => [q.a, q.b, q.z])])).join('\n') : '';
+  const cur = refine ? opts.current!.map(lineOf).join('\n') : '';
   const task = refine
     ? `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original. Image 2 is the original with the isometric grid AND the CURRENT scene drawn in red on top.\nCurrent scene, one element per line:\n${cur}\n\nCompare the red lines with the original and output the FULL corrected scene: move/resize elements whose red outline does not sit on the original, add anything missing, delete anything that does not exist, keep correct elements unchanged.`
     : `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original drawing. Image 2 is the same image with the isometric grid. Build the complete scene for this drawing.`;
-  const prompt = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
-  opts.onProgress?.(refine ? 'AI가 현재 장면을 원본과 비교하는 중… (처음 실행이면 Claude 사용 허용 창이 떠요)' : 'AI가 원본을 읽고 초안을 만드는 중… (처음 실행이면 Claude 사용 허용 창이 떠요)');
-  try {
-    const { text, truncated } = await sample(prompt, {
-      images: [await blobOf(opts.original), await blobOf(opts.gridded)],
-      modelTier: 'complex', effort: 'high', cache: false, signal: opts.signal,
-      onText: ({ text }: { text: string }) => opts.onProgress?.(`장면 데이터를 받는 중… 요소 ${text.split('\n').filter((l) => l.trim().startsWith('[')).length}개`),
-    });
-    const els = parseLines(text);
-    if (!els.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
-    if (truncated && refine && els.length < opts.current!.length * 0.6) return opts.current!;   // 많이 잘린 보정은 버린다
-    return els;
-  } catch (e) {
-    const err = e as { code?: string; message?: string; text?: string };
-    if (!err.code) throw e;
-    if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
-    const partial = err.text ? parseLines(err.text) : [];
-    if (partial.length > 20 && !refine) return partial;
-    throw new Error(SAMPLE_ERR[err.code] ?? `Claude 호출 실패 (${err.code})`);
+  const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
+  const images = [await blobOf(opts.original), await blobOf(opts.gridded)];
+
+  // 응답이 길이·시간 한도에서 잘리면 이미 받은 요소는 두고 나머지만 이어서 받는다(최대 3번)
+  const got: El[] = [];
+  for (let part = 0; part < 3; part++) {
+    const prompt = part === 0 ? base
+      : `${base}\n\nYOU ALREADY OUTPUT THESE ${got.length} ELEMENTS - do not repeat them:\n${got.map(lineOf).join('\n')}\n\nContinue with ONLY the remaining elements, same format, same back-to-front order. If nothing remains, output nothing.`;
+    opts.onProgress?.(part === 0 ? 'Claude가 그림을 분석하는 중' : `응답이 잘려서 나머지를 이어 받는 중 (${part + 1}번째)`);
+    try {
+      const { text, truncated } = await sample(prompt, {
+        images, modelTier: 'complex', effort: refine ? 'medium' : 'high', cache: false, signal: opts.signal,
+        onText: ({ text }: { text: string }) => opts.onProgress?.(`장면 데이터를 받는 중 · 요소 ${got.length + countLines(text)}개`),
+      });
+      got.push(...parseLines(text));
+      if (!truncated) break;
+    } catch (e) {
+      const err = e as { code?: string; message?: string; text?: string };
+      if (!err.code) throw e;
+      if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
+      const partial = err.text ? parseLines(err.text) : [];
+      // 연결이 중간에 끊겼지만 받은 게 있으면 이어 받기로 넘어간다
+      if (err.code === 'upstream_error' && partial.length) { got.push(...partial); continue; }
+      if (got.length + partial.length > 20 && !refine) return [...got, ...partial];
+      throw new Error(SAMPLE_ERR[err.code] ?? `Claude 호출 실패 (${err.code})`);
+    }
   }
+  if (!got.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
+  if (refine && got.length < opts.current!.length * 0.6) return opts.current!;   // 많이 모자란 보정은 버리고 이전 것을 유지
+  return got;
 }
 
 const SAMPLE_ERR: Record<string, string> = {

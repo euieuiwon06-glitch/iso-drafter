@@ -1,0 +1,26 @@
+// 개발용: 실패 → 이 단계부터 다시 / 처음으로 → 이어서 하기 흐름 확인
+import { chromium } from 'playwright-core';
+const [img, out] = process.argv.slice(2);
+const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+await page.goto('http://localhost:5341/');
+await page.evaluate(() => { localStorage.clear(); localStorage.setItem('iso-drafter:key', 'sk-ant-test-invalid'); });
+await page.reload(); await page.waitForTimeout(500);
+await page.setInputFiles('#fileConvert', img);
+await page.waitForTimeout(3000);
+console.log('during:', await page.textContent('#etaTotal'), '|', (await page.textContent('#steps')).replace(/\s+/g, ' '));
+await page.waitForFunction(() => document.querySelector('li.fail'), null, { timeout: 120000 });
+console.log('after fail:', (await page.textContent('#steps')).replace(/\s+/g, ' '));
+console.log('resume visible:', await page.isVisible('#btnResume'), '| msg:', (await page.textContent('#runMsg')).replace(/\n/g, ' / '));
+await page.screenshot({ path: `${out}-fail.png` });
+await page.click('#btnStop');
+await page.waitForTimeout(300);
+console.log('upload resumeBox:', await page.isVisible('#resumeBox'), await page.textContent('#resumeText'));
+await page.reload(); await page.waitForTimeout(600);
+console.log('after reload resumeBox:', await page.isVisible('#resumeBox'));
+await page.click('#btnResumeJob');
+await page.waitForTimeout(1500);
+console.log('resumed steps:', (await page.textContent('#steps')).replace(/\s+/g, ' '));
+await page.screenshot({ path: `${out}-resume.png` });
+await browser.close();
