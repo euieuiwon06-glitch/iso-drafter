@@ -1,4 +1,4 @@
-import { KINDS, KIND_LABEL, COLORS, DIRS, defaults, newId, type El, type Kind, type Scene } from './schema';
+import { KINDS, KIND_LABEL, COLORS, DIRS, POINT_KINDS, defaults, newId, type El, type Kind, type Scene } from './schema';
 import { renderElement, renderSVG, P, screenDeltaToAB, screenToAB, C, S } from './iso';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { runAI, describeError, getKey, setKey, aiMode } from './ai';
@@ -101,7 +101,7 @@ type Handle = { x: number; y: number; apply: (e: El, dA: number, dB: number, dZ:
 function handlesFor(e: El): Handle[] {
   const hs: Handle[] = [];
   const pt = (a: number, b: number, z: number) => { const [x, y] = P(a, b, z); return { x, y }; };
-  if (e.kind === 'route' || e.kind === 'floor') {
+  if (POINT_KINDS.has(e.kind)) {
     e.points.forEach((q, i) => hs.push({ ...pt(q.a, q.b, q.z), apply: (el, dA, dB, _dz, fr, o) => {
       el.points[i] = { ...o.points[i], a: snap(o.points[i].a + dA, fr), b: snap(o.points[i].b + dB, fr) };
     } }));
@@ -121,7 +121,7 @@ function handlesFor(e: El): Handle[] {
 
 function footprint(e: El): string {
   const pts: [number, number][] = [];
-  if (e.kind === 'route' || e.kind === 'floor') e.points.forEach((q) => pts.push(P(q.a, q.b, q.z)));
+  if (POINT_KINDS.has(e.kind)) e.points.forEach((q) => pts.push(P(q.a, q.b, q.z)));
   else if (['chair', 'taskChair', 'stool', 'monitor', 'laptop', 'node'].includes(e.kind) && Math.abs(e.a1 - e.a0) < 1 && Math.abs(e.b1 - e.b0) < 1) {
     const r = e.kind === 'node' ? 34 : 18;
     for (const [da, db] of [[-r, -r], [r, -r], [r, r], [-r, r]]) pts.push(P(e.a0 + da, e.b0 + db, e.z));
@@ -184,7 +184,7 @@ function renderProps() {
   if (!e) { box.innerHTML = '<p class="empty">요소를 선택하면 여기서 수치를 편집할 수 있어요.<br><br>좌표는 등각 격자 기준이에요. A는 오른쪽 아래, B는 오른쪽 위, z와 h는 높이예요.</p>'; return; }
   const num = (k: keyof El, label: string) =>
     `<label class="field"><span>${label}</span><input type="number" step="5" data-k="${String(k)}" value="${(e[k] as number) ?? 0}"></label>`;
-  const usesPts = e.kind === 'route' || e.kind === 'floor';
+  const usesPts = POINT_KINDS.has(e.kind);
   box.innerHTML = `
     <div class="props-head"><b>${KIND_LABEL[e.kind]}</b><select data-k="kind">${KINDS.map((k) => `<option value="${k}" ${k === e.kind ? 'selected' : ''}>${KIND_LABEL[k]}</option>`).join('')}</select></div>
     <div class="fields">

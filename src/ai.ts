@@ -33,6 +33,12 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - monitor: footprint = the screen width as measured (a0..a1 or b0..b1 along the screen), z = desk height; dir +a/-a = screen spans along A, +b/-b = along B.
 - laptop: footprint as measured, z = table height.
 - plant: potted plant, footprint = foliage width as measured, h = total height. Output EVERY plant separately (planter rows: one plant element per visible plant).
+- armchair: lounge armchair, footprint as measured; dir like sofa.
+- planter: long planter box with plants on top, footprint and box height h as measured, n = number of plants visible.
+- counter: kitchen counter / island / reception desk, footprint and height as measured, n = number of sinks.
+- panel: thin board on a wall - whiteboard, TV, screen, artwork, door leaf - from (a0,b0) to (a1,b1) along the wall, z = bottom height, h = panel height, n = 1 for an inner frame.
+- prism: any object with a non-rectangular footprint (L-shaped desk, curved bench, rounded sofa, odd cabinet): points = footprint polygon corners at its base z, h = height.
+- lines: extra ink detail drawn on surfaces - cabinet door and drawer seams, panel divisions, handles, mullions, desk privacy screens, keyboard outlines. points = 3D polyline. Use liberally to reach the original's level of detail.
 - box: any small box-like object - crate, carton on a shelf, cabinet, counter, appliance, printer, locker, planter box, robot body. Footprint and height as measured; color white unless clearly green.
 - stairs: footprint a0..a1 x b0..b1, total drop h (the floor it descends from is h above the base), n steps, dir = descending direction. Base coordinates are those of the lower floor.
 
@@ -44,6 +50,7 @@ QUALITY - DENSITY AND TRUE SIZE (most important):
 - Match the original's level of detail. Every individual object the image shows becomes its own element: each chair, each monitor, each laptop, each plant, each box on a shelf rack, each cabinet, each door frame, each glass panel run, each rail. Never summarise a group ("a row of desks") as one bigger element, and never skip small objects. A detailed office drawing usually needs 150-400 elements; a band of it 60-200.
 - True size: measure every footprint by reading the grid at the object's actual corners. Do not enlarge objects, do not round sizes up, do not make furniture chunkier than drawn. Small things stay small (chairs ~20-35, monitors ~25-45 wide in typical drawings - but always trust your measurement over these hints). Snap to multiples of 5 only when that changes a size by less than 10%.
 - Keep spacing: rows of chairs/desks keep the original count and pitch.
+- Use the most specific kind for each object (sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
 - Straighten anything the source drew slightly off-axis.`;
 
 export function getKey() { try { return localStorage.getItem('iso-drafter:key') ?? ''; } catch { return ''; } }
@@ -113,7 +120,7 @@ export const hostedInClaude = inClaude;
 // 한 줄에 요소 하나(JSON 배열). 응답이 길이 한도에서 잘려도 완성된 줄은 살릴 수 있다.
 const LINE_FORMAT = `OUTPUT FORMAT (strict): reply with one element per line, each line a JSON array, nothing else - no prose, no code fence:
 [kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points]
-kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for route/floor, else [].
+kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for floor/prism/lines, else [].
 Example line: ["table",1990,2460,240,330,0,72,0,0,"+b","white","meeting table",[]]`;
 
 // data: URL → Blob. 아티팩트에서는 fetch()가 막혀 있어 직접 디코딩한다.
