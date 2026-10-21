@@ -108,7 +108,15 @@ const LINE_FORMAT = `OUTPUT FORMAT (strict): reply with one element per line, ea
 kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for route/floor, else [].
 Example line: ["table",1990,2460,240,330,0,72,0,0,"+b","white","meeting table",[]]`;
 
-const blobOf = async (dataUrl: string) => (await fetch(dataUrl)).blob();
+// data: URL → Blob. 아티팩트에서는 fetch()가 막혀 있어 직접 디코딩한다.
+const blobOf = async (dataUrl: string) => {
+  const comma = dataUrl.indexOf(',');
+  const type = dataUrl.slice(5, dataUrl.indexOf(';'));
+  const bin = atob(dataUrl.slice(comma + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+};
 
 function parseLines(text: string): El[] {
   const out: El[] = [];
