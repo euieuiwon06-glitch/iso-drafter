@@ -10,7 +10,67 @@
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
+  <div id="convertView" class="convert">
+    <header class="top">
+      <div class="brand">ISO<span>DRAFTER</span></div>
+      <span class="tag">아이소메트릭 이미지 → 정갈한 SVG</span>
+      <div class="group end">
+        <button class="btn" id="btnOpenEditor">에디터 열기</button>
+        <button class="btn icon" id="btnKey2" title="API 키 설정">⚙</button>
+      </div>
+    </header>
+
+    <section id="stepUpload" class="pane upload">
+      <div class="intro">
+        <h1>아이소메트릭 그림을 올리면<br>투시를 바로잡고 도면처럼 다시 그려 드려요</h1>
+        <p>AI가 생성한 이미지처럼 끝점이나 투시가 어긋난 그림도 정확한 등각 축 위에 벽·바닥·가구·동선을 새로 그려 SVG로 만들어요.</p>
+      </div>
+      <label class="drop" id="drop">
+        <input id="fileConvert" type="file" accept="image/*" hidden />
+        <b>이미지를 끌어다 놓거나 클릭해서 선택</b>
+        <span>PNG · JPG · WEBP</span>
+      </label>
+      <div class="opts">
+        <label>자동 보정 횟수
+          <select id="selRounds"><option value="0">0회 (빠름)</option><option value="1">1회</option><option value="2" selected>2회 (추천)</option><option value="3">3회</option></select>
+        </label>
+        <span class="muted" id="keyState"></span>
+      </div>
+    </section>
+
+    <section id="stepRun" class="pane run" hidden>
+      <div class="run-preview"><img id="runImg" alt="" /></div>
+      <div class="run-side">
+        <h2>변환 중</h2>
+        <ol id="steps" class="steps"></ol>
+        <p class="muted" id="runMsg"></p>
+        <button class="btn" id="btnStop">중단</button>
+      </div>
+    </section>
+
+    <section id="stepResult" class="pane result" hidden>
+      <div class="result-view" id="resultView">
+        <img id="resUnder" alt="교정된 원본" />
+        <img id="resSvg" alt="변환 결과" />
+      </div>
+      <div class="result-side">
+        <h2>완료</h2>
+        <p class="muted" id="resStats"></p>
+        <label class="field"><span>원본 겹쳐 보기</span><input id="rngCompare" type="range" min="0" max="100" value="0" /></label>
+        <div class="stack">
+          <button class="btn dark" id="btnResSvg">SVG 다운로드</button>
+          <button class="btn" id="btnResEdit">에디터에서 다듬기</button>
+          <button class="btn" id="btnResMore">AI 보정 한 번 더</button>
+          <button class="btn" id="btnResNew">새 이미지</button>
+        </div>
+        <p class="muted small">어긋난 가구나 빠진 벽은 ‘에디터에서 다듬기’로 드래그해 맞출 수 있어요.</p>
+      </div>
+    </section>
+  </div>
+
+  <div id="editorView" hidden>
   <header class="top">
+    <button class="btn" id="btnBack">← 변환 화면</button>
     <div class="brand">ISO<span>DRAFTER</span></div>
     <div class="group">
       <label class="btn" title="원본 이미지 열기">이미지 열기<input id="fileImage" type="file" accept="image/*" hidden /></label>
@@ -63,6 +123,7 @@
   </main>
 
   <footer class="status"><span id="status">준비됨</span><button class="btn small" id="btnCancel" hidden>취소</button></footer>
+  </div>
 
   <dialog id="dlgKey">
     <form method="dialog">
@@ -79,6 +140,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="./src/main.ts"></script>
+  <script type="module" src="./src/flow.ts"></script>
 </body>
 </html>

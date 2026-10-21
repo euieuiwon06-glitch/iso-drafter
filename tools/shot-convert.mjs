@@ -1,0 +1,20 @@
+// 개발용: 변환 화면에 이미지를 올려 투시 교정 단계까지 확인한다. node tools/shot-convert.mjs <image> <outPrefix> [apiKey]
+import { chromium } from 'playwright-core';
+const [img, out, key = 'sk-ant-test-invalid'] = process.argv.slice(2);
+const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+page.on('console', (m) => { if (m.type() === 'error' || m.text().startsWith('DBG')) console.log('[console]', m.text().slice(0, 600)); }); page.on('worker', (w) => w.on('console', (m) => console.log('[worker]', m.text().slice(0, 600))));
+await page.goto('http://localhost:5341/');
+await page.waitForTimeout(800);
+await page.screenshot({ path: `${out}-1.png` });
+await page.evaluate((k) => localStorage.setItem('iso-drafter:key', k), key);
+await page.reload(); await page.waitForTimeout(600);
+const t = Date.now();
+await page.setInputFiles('#fileConvert', img);
+await page.waitForFunction(() => document.querySelector('li[data-k=rect]')?.className === 'done' || document.querySelector('li.fail'), null, { timeout: 180000 });
+console.log('rect done in', Date.now() - t, 'ms');
+await page.waitForFunction(() => document.querySelector('li.fail') || !document.getElementById('stepResult').hidden, null, { timeout: 1800000 }).catch(() => {});
+console.log('msg:', await page.textContent('#runMsg'), '| stats:', await page.textContent('#resStats'));
+await page.screenshot({ path: `${out}-2.png` });
+await browser.close();

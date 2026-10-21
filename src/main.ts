@@ -52,6 +52,7 @@ function status(msg: string, kind: '' | 'busy' | 'err' = '') {
 function setView() { stage.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`); }
 function fitView() {
   const r = stage.getBoundingClientRect();
+  if (!r.width || !r.height) return;          // 에디터가 숨겨져 있을 때
   const k = Math.min(r.width / scene.width, r.height / scene.height) * 0.96;
   view.w = r.width / k; view.h = r.height / k;
   view.x = (scene.width - view.w) / 2; view.y = (scene.height - view.h) / 2;
@@ -135,7 +136,7 @@ function renderSelection() {
   selLayer.innerHTML = '';
   const e = selected();
   if (!e) return;
-  const px = view.w / stage.getBoundingClientRect().width;     // 화면 1px의 장면 단위
+  const px = view.w / (stage.getBoundingClientRect().width || view.w);     // 화면 1px의 장면 단위
   const path = document.createElementNS(NS, 'path');
   path.setAttribute('d', footprint(e));
   path.setAttribute('fill', 'rgba(47,107,255,.08)');
@@ -417,10 +418,12 @@ $('btnJson').onclick = () => download('iso-scene.json', JSON.stringify({ ...scen
 
 // ---------------------------------------------------------------- API key dialog
 const dlg = $('dlgKey') as HTMLDialogElement;
-$('btnKey').onclick = () => { ($('inpKey') as HTMLInputElement).value = getKey(); dlg.showModal(); };
+export function openKeyDialog() { ($('inpKey') as HTMLInputElement).value = getKey(); dlg.showModal(); }
+$('btnKey').onclick = openKeyDialog;
 dlg.addEventListener('close', () => {
   if (dlg.returnValue === 'save') { setKey(($('inpKey') as HTMLInputElement).value.trim()); status('API 키를 저장했어요(이 브라우저에만).'); }
   if (dlg.returnValue === 'clear') { setKey(''); status('API 키를 지웠어요.'); }
+  window.dispatchEvent(new CustomEvent('iso:key'));
 });
 
 // ---------------------------------------------------------------- AI
@@ -462,6 +465,19 @@ $('btnDraft').onclick = () => {
 };
 $('btnRefine').onclick = () => void ai(true);
 $('btnCancel').onclick = () => aiAbort?.abort();
+
+// ---------------------------------------------------------------- 변환 화면과의 연결
+/** 변환 결과(장면 + 교정된 원본)를 에디터에 연다. */
+export async function loadIntoEditor(sc: Scene, url: string | null) {
+  scene = { width: sc.width, height: sc.height, elements: ensureIds(sc.elements) };
+  underUrl = url; underImg = url ? await loadImage(url) : null;
+  selId = null; undo.length = 0; redo.length = 0; save();
+  fullRender(); fitView();
+  status('변환 결과를 불러왔어요. 어긋난 요소를 클릭해서 드래그하거나 오른쪽에서 수치를 고치세요.');
+}
+export const showEditorFit = () => { fitView(); renderSelection(); };
+export const editorScene = () => scene;
+$('btnBack').onclick = () => window.dispatchEvent(new CustomEvent('iso:back'));
 
 // ---------------------------------------------------------------- boot
 try {

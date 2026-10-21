@@ -65,7 +65,7 @@ export async function runAI(opts: {
     model: MODEL,
     max_tokens: 64000,
     thinking: { type: 'adaptive' },
-    output_config: { effort: 'high', format: betaZodOutputFormat(SceneSchema) },
+    output_config: { effort: refine ? 'high' : 'xhigh', format: betaZodOutputFormat(SceneSchema) },
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default',
     system: SYSTEM,
