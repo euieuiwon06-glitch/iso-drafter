@@ -168,7 +168,7 @@ async function aiPass(current: El[] | null, label: string): Promise<El[]> {
   const { dataUrl: gridded } = await griddedImage(rectImg!, overlay);
   return runAI({
     original, gridded, width: rectImg!.naturalWidth, height: rectImg!.naturalHeight,
-    current: current ?? undefined,
+    current: current ?? undefined, base: rectImg!, overlaySvg: overlay,
     onProgress: (m) => msg(`${label}: ${m}`),
     signal: abort!.signal,
   });

@@ -4,6 +4,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
 import { getSample, inClaude } from './platform';
+import { renderRegion, splitRegions, type Rect } from './grid';
+import { C, S } from './iso';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -49,6 +51,7 @@ export type Progress = (msg: string) => void;
 export async function runAI(opts: {
   original: string; gridded: string; width: number; height: number;
   current?: El[]; onProgress?: Progress; signal?: AbortSignal;
+  base?: HTMLImageElement; overlaySvg?: string | null;   // 구독 경로: 구역별로 잘라 보낸다
 }): Promise<El[]> {
   if (await getSample()) return runSample(opts);
   const key = getKey();
@@ -141,43 +144,86 @@ function parseLines(text: string): El[] {
 const lineOf = (e: El) => JSON.stringify([e.kind, e.a0, e.a1, e.b0, e.b1, e.z, e.h, e.n, e.m, e.dir, e.color, e.note, e.points.map((q) => [q.a, q.b, q.z])]);
 const countLines = (t: string) => t.split('\n').filter((l) => l.trim().startsWith('[')).length;
 
-async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
-  const sample = (await getSample())!;
-  const refine = !!opts.current?.length;
-  const cur = refine ? opts.current!.map(lineOf).join('\n') : '';
-  const task = refine
-    ? `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original. Image 2 is the original with the isometric grid AND the CURRENT scene drawn in red on top.\nCurrent scene, one element per line:\n${cur}\n\nCompare the red lines with the original and output the FULL corrected scene: move/resize elements whose red outline does not sit on the original, add anything missing, delete anything that does not exist, keep correct elements unchanged.`
-    : `Image size: ${opts.width} x ${opts.height} px. Image 1 is the original drawing. Image 2 is the same image with the isometric grid. Build the complete scene for this drawing.`;
-  const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
-  const images = [await blobOf(opts.original), await blobOf(opts.gridded)];
+/** 요소의 화면상 중심(구역 배정용) */
+function centerOf(e: El): [number, number] {
+  if (e.points.length) {
+    const n = e.points.length;
+    const a = e.points.reduce((t, q) => t + q.a, 0) / n, b = e.points.reduce((t, q) => t + q.b, 0) / n, z = e.points.reduce((t, q) => t + q.z, 0) / n;
+    return [C * (a + b), S * (a - b) - z];
+  }
+  const a = (e.a0 + e.a1) / 2, b = (e.b0 + e.b1) / 2, z = e.z + (e.kind === 'slab' ? 0 : e.h / 2);
+  return [C * (a + b), S * (a - b) - z];
+}
+const inside = ([x, y]: [number, number], r: Rect, W: number, H: number) => {
+  const cx = Math.min(W - 1, Math.max(0, x)), cy = Math.min(H - 1, Math.max(0, y));   // 화면 밖 요소는 가장 가까운 구역으로
+  return cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h;
+};
 
-  // 응답이 길이·시간 한도에서 잘리면 이미 받은 요소는 두고 나머지만 이어서 받는다(최대 3번)
+type SampleErr = { code?: string; message?: string; text?: string };
+const sampleError = (code: string, secs: number) =>
+  new Error(`${SAMPLE_ERR[code] ?? 'Claude 호출이 실패했어요.'} (오류 코드: ${code}, ${secs}초 만에 중단)`);
+
+/** 한 번의 요청. 응답이 잘리거나 연결이 끊기면 받은 것은 두고 나머지를 이어 받는다(최대 3번). */
+async function askWithContinuation(sample: NonNullable<Awaited<ReturnType<typeof getSample>>>, base: string, images: Blob[], effort: string, opts: Parameters<typeof runAI>[0], label: string): Promise<El[]> {
   const got: El[] = [];
+  const t0 = performance.now();
   for (let part = 0; part < 3; part++) {
     const prompt = part === 0 ? base
       : `${base}\n\nYOU ALREADY OUTPUT THESE ${got.length} ELEMENTS - do not repeat them:\n${got.map(lineOf).join('\n')}\n\nContinue with ONLY the remaining elements, same format, same back-to-front order. If nothing remains, output nothing.`;
-    opts.onProgress?.(part === 0 ? 'Claude가 그림을 분석하는 중' : `응답이 잘려서 나머지를 이어 받는 중 (${part + 1}번째)`);
+    opts.onProgress?.(part === 0 ? `${label} · Claude가 그림을 분석하는 중` : `${label} · 응답이 잘려서 나머지를 이어 받는 중`);
     try {
       const { text, truncated } = await sample(prompt, {
-        images, modelTier: 'complex', effort: refine ? 'medium' : 'high', cache: false, signal: opts.signal,
-        onText: ({ text }: { text: string }) => opts.onProgress?.(`장면 데이터를 받는 중 · 요소 ${got.length + countLines(text)}개`),
+        images, modelTier: 'complex', effort, cache: false, signal: opts.signal,
+        onText: ({ text }: { text: string }) => opts.onProgress?.(`${label} · 받는 중 · 요소 ${got.length + countLines(text)}개`),
       });
       got.push(...parseLines(text));
-      if (!truncated) break;
+      if (!truncated) return got;
     } catch (e) {
-      const err = e as { code?: string; message?: string; text?: string };
+      const err = e as SampleErr;
       if (!err.code) throw e;
       if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
       const partial = err.text ? parseLines(err.text) : [];
-      // 연결이 중간에 끊겼지만 받은 게 있으면 이어 받기로 넘어간다
       if (err.code === 'upstream_error' && partial.length) { got.push(...partial); continue; }
-      if (got.length + partial.length > 20 && !refine) return [...got, ...partial];
-      throw new Error(SAMPLE_ERR[err.code] ?? `Claude 호출 실패 (${err.code})`);
+      if (got.length + partial.length > 10) return [...got, ...partial];
+      throw sampleError(err.code, Math.round((performance.now() - t0) / 1000));
     }
   }
-  if (!got.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
-  if (refine && got.length < opts.current!.length * 0.6) return opts.current!;   // 많이 모자란 보정은 버리고 이전 것을 유지
   return got;
+}
+
+async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
+  const sample = (await getSample())!;
+  if (!opts.base) throw new Error('원본 이미지가 없어요.');
+  const lim = await sample.limits().catch(() => null);
+  if (!lim?.images) throw new Error('이 화면에서는 이미지를 Claude에게 보낼 수 없어요. claude.ai에서 페이지를 새로고침해 주세요. (오류 코드: images_unavailable)');
+  const twoImages = lim.images.maxCount >= 2;
+  const refine = !!opts.current?.length;
+  const W = opts.width, H = opts.height;
+  // 구역 수: 긴 변 약 750px마다 1구역 → 호출 1번이 짧아지고 구역마다 해상도가 높아진다
+  const n = Math.max(1, Math.min(4, Math.round(Math.max(W, H) / 750)));
+  const regions = splitRegions(W, H, n);
+  const out: El[] = [];
+  // 화면 아래(앞·아래층) 구역부터: 합칠 때 아래층이 먼저 그려진다
+  for (let idx = n - 1; idx >= 0; idx--) {
+    const { core, crop } = regions[idx];
+    const label = n > 1 ? `구역 ${n - idx}/${n}` : '전체';
+    const mine = refine ? opts.current!.filter((e) => inside(centerOf(e), core, W, H)) : [];
+    const gridded = await renderRegion(opts.base, { crop, grid: true, overlaySvg: refine ? opts.overlaySvg : null });
+    const images = [await blobOf(gridded)];
+    if (twoImages) images.unshift(await blobOf(await renderRegion(opts.base, { crop })));
+    const where = `This request covers one horizontal band of a larger drawing: screen pixels x ${Math.round(crop.x)}..${Math.round(crop.x + crop.w)}, y ${Math.round(crop.y)}..${Math.round(crop.y + crop.h)} of the full ${W} x ${H} image. The grid labels are GLOBAL chart coordinates of the full image - use them exactly as printed. Output every element whose main part is visible in this band (other bands are handled separately).`;
+    const imgs = twoImages ? 'Image 1 is the band of the original; image 2 is the same band with the isometric grid' : 'The image is the band of the original with the isometric grid drawn over it';
+    const task = refine
+      ? `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, one per line:\n${mine.map(lineOf).join('\n') || '(none)'}\n\nCompare the red lines with the original and output the corrected list for this band: move/resize elements whose red outline does not sit on the original, add anything missing, drop anything that does not exist, keep correct elements unchanged.`
+      : `${where}\n${imgs}. Build the scene elements for this band.`;
+    const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
+    const els = await askWithContinuation(sample, base, images, refine ? 'medium' : 'high', opts, label);
+    const keep = els.filter((e) => inside(centerOf(e), core, W, H));
+    // 보정 결과가 많이 모자라면 이 구역은 이전 것을 유지
+    out.push(...(refine && keep.length < mine.length * 0.6 ? mine : keep));
+  }
+  if (!out.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
+  return out;
 }
 
 const SAMPLE_ERR: Record<string, string> = {

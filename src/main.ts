@@ -440,7 +440,7 @@ async function ai(refine: boolean) {
     const overlay = refine ? renderSVG(scene, { wscale: 2, bg: null }) : null;
     const { dataUrl: gridded } = await griddedImage(underImg, overlay);
     const els = await runAI({
-      original, gridded, width: scene.width, height: scene.height,
+      original, gridded, width: scene.width, height: scene.height, base: underImg, overlaySvg: overlay,
       current: refine ? scene.elements : undefined,
       onProgress: (m) => status(`${m} (${Math.round((performance.now() - t0) / 1000)}초)`, 'busy'),
       signal: aiAbort.signal,
