@@ -79,8 +79,14 @@
             <button class="on" data-m="wipe">비교 슬라이더</button><button data-m="result">결과만</button><button data-m="orig">원본만</button>
           </div>
         </div>
+        <div class="field"><span>가구·제품 표현</span>
+          <div class="seg" id="detailMode">
+            <button class="on" data-m="shapes">도형·곡선으로 다시 그리기</button><button data-m="trace">원본 선 따기 (실험)</button>
+          </div>
+          <span class="muted small" id="traceState"></span>
+        </div>
         <label class="field"><span>구조선 굵기 (벽·바닥·유리) <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="40" max="300" value="135" /></label>
-        <label class="field"><span>가구선 굵기 (의자·책상·화분 등) <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
+        <label class="field"><span>가구·제품 선 굵기 <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
         <div class="stack">
           <button class="btn dark" id="btnResSvg">SVG 다운로드</button>
           <button class="btn" id="btnResEdit">에디터에서 다듬기</button>

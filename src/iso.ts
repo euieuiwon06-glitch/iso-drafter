@@ -155,6 +155,88 @@ function stairs(p: Pen, e: El) {
   }
 }
 
+// ---------------------------------------------------------------- 곡선 도우미
+type P2 = [number, number];
+/** Catmull-Rom으로 점들 사이를 촘촘히 채운다(닫힌 곡선이면 closed) */
+function catmull2(pts: P2[], closed: boolean, per = 10): P2[] {
+  const n = pts.length;
+  if (n < 3) return pts;
+  const at = (i: number) => (closed ? pts[(i + n) % n] : pts[Math.max(0, Math.min(n - 1, i))]);
+  const out: P2[] = [];
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    for (let k = 0; k < per; k++) {
+      const t = k / per, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map((j) => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3)) as P2);
+    }
+  }
+  if (!closed) out.push(pts[n - 1]);
+  return out;
+}
+function catmull3(pts: V3[], per = 10): V3[] {
+  const n = pts.length;
+  if (n < 3) return pts;
+  const at = (i: number) => pts[Math.max(0, Math.min(n - 1, i))];
+  const out: V3[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    for (let k = 0; k < per; k++) {
+      const t = k / per, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1, 2].map((j) => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3)) as V3);
+    }
+  }
+  out.push(pts[n - 1]);
+  return out;
+}
+
+/** 매끈한 곡선 바닥 모양의 입체: 옆면은 선 없이 채우고, 윗면·아래 보이는 가장자리·좌우 윤곽선만 긋는다 */
+function smoothPrism(p: Pen, ctrl: P2[], z: number, h: number, top: string) {
+  const pts = catmull2(ctrl, true, 12);
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) { const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length]; area += x1 * y2 - x2 * y1; }
+  const sgn = area > 0 ? 1 : -1;
+  const vis = pts.map((q, i) => { const r = pts[(i + 1) % pts.length], da = r[0] - q[0], db = r[1] - q[1]; return db * sgn - (-da * sgn) > 1e-9; });
+  // 옆면(채움만)
+  pts.forEach((q, i) => {
+    if (!vis[i] || h <= 0) return;
+    const r = pts[(i + 1) % pts.length];
+    p.poly([[q[0], q[1], z], [r[0], r[1], z], [r[0], r[1], z + h], [q[0], q[1], z + h]], '#EDEDED', '#EDEDED', 0.8);
+  });
+  // 아래 보이는 가장자리와 윤곽 세로선
+  if (h > 0) {
+    let run: V3[] = [];
+    const flush = () => { if (run.length > 1) p.line(run, INK, 1.8); run = []; };
+    for (let i = 0; i < pts.length; i++) {
+      const q = pts[i], r = pts[(i + 1) % pts.length];
+      if (vis[i]) { if (!run.length) run.push([q[0], q[1], z]); run.push([r[0], r[1], z]); } else flush();
+      const prev = vis[(i - 1 + pts.length) % pts.length];
+      if (vis[i] !== prev) p.line([[q[0], q[1], z], [q[0], q[1], z + h]], INK, 1.8);
+    }
+    flush();
+  }
+  p.poly(pts.map(([a, b]) => [a, b, z + h] as V3), top, INK, 1.8);
+}
+
+/** 회전체: 단면(반지름, 높이) 목록을 수직축으로 돌린 모양 — 화병, 조명, 병, 둥근 스툴 */
+function lathe(p: Pen, a: number, b: number, z: number, prof: P2[], fill: string) {
+  if (prof.length < 2) return;
+  const k = Math.SQRT1_2;
+  const prof2 = prof.length >= 3 ? catmull2(prof, false, 6) : prof;
+  const left = prof2.map(([r, zz]) => [a - r * k, b - r * k, z + zz] as V3);
+  const right = prof2.map(([r, zz]) => [a + r * k, b + r * k, z + zz] as V3).reverse();
+  // 몸통(채움)
+  const front = (r: number, zz: number) => { const o: V3[] = []; for (let i = 0; i <= 16; i++) { const t = Math.PI * 1.25 + (Math.PI * i) / 16; o.push([a + r * Math.cos(t), b + r * Math.sin(t), z + zz]); } return o; };
+  p.poly([...left, ...right], '#F1F1F1', null, 0);
+  p.poly([...front(prof2[0][0], prof2[0][1])].reverse().concat(left.slice(0, 1)), '#F1F1F1', null, 0);
+  p.line(left, INK, 1.6); p.line(right, INK, 1.6);
+  p.line(front(prof2[0][0], prof2[0][1]), INK, 1.6);
+  // 꺾이는 단면마다 앞쪽 테두리(가는 선)
+  for (let i = 1; i < prof.length - 1; i++) p.line(front(prof[i][0], prof[i][1]), INK, 0.9);
+  const [rt, zt] = prof[prof.length - 1];
+  if (rt > 1) p.ellipse(a, b, z + zt, rt, fill, 1.6);
+}
+
 // ---------------------------------------------------------------- 세부 도형 도우미
 /** 잎: 줄기 끝에서 사방으로 뻗는 뾰족한 잎 n장(뒤쪽부터 그림) */
 function leaves(p: Pen, a: number, b: number, z: number, h: number, r: number, n: number, seed: number) {
@@ -215,7 +297,13 @@ export function drawElement(p: Pen, e: El) {
   const col = PALETTE[e.color] ?? '#FFFFFF';
   switch (e.kind) {
     case 'slab': p.box(e.a0, e.a1, e.b0, e.b1, e.z - (e.h || 18), e.h || 18, col, '#EDEDED', '#E0E0E0', INK, 2.4); break;
-    case 'floor': if (e.points.length >= 3) p.poly(e.points.map((q) => [q.a, q.b, q.z] as V3), col, e.n > 0 ? INK : null, e.n > 0 ? 2.4 : 0); break;
+    case 'floor': {
+      if (e.points.length < 3) break;
+      // m = 1이면 매끈한 곡선 윤곽(원형·곡선 러그)
+      const pts = e.m >= 1 ? catmull2(e.points.map((q) => [q.a, q.b] as P2), true, 12).map(([a, b]) => [a, b, e.points[0].z] as V3) : e.points.map((q) => [q.a, q.b, q.z] as V3);
+      p.poly(pts, col, e.n > 0 || e.m >= 1 ? INK : null, e.n > 0 || e.m >= 1 ? 1.6 : 0);
+      break;
+    }
     case 'wall': p.box(e.a0, e.a1, e.b0, e.b1, e.z, e.h || 300, col, e.color === 'white' ? '#F3F3F3' : col, e.color === 'white' ? '#E6E6E6' : col, INK, 2.4); break;
     case 'glass': glass(p, e, e.color === 'white' ? '#F5F7F7' : col, e.color === 'white' ? 0.5 : 0.3, e.color === 'gray'); break;
     case 'rail': glass(p, { ...e, h: e.h || 95 }, '#F5F7F7', 0.35); break;
@@ -286,9 +374,17 @@ export function drawElement(p: Pen, e: El) {
       break;
     }
     case 'prism': {
-      // 임의 발자국 다각형을 세운 입체: 전용 종류가 없는 물건
+      // 임의 발자국 다각형을 세운 입체: 전용 종류가 없는 물건. n = 1이면 매끈한 곡선 윤곽
       if (e.points.length < 3) break;
-      prism(p, e.points.map((q) => [q.a, q.b] as [number, number]), e.points[0].z + e.z, e.h || 30, e.color === 'white' ? '#FFFFFF' : PALETTE[e.color]);
+      const ctrl = e.points.map((q) => [q.a, q.b] as [number, number]), top = e.color === 'white' ? '#FFFFFF' : PALETTE[e.color];
+      if (e.n >= 1) smoothPrism(p, ctrl, e.points[0].z + e.z, e.h || 30, top);
+      else prism(p, ctrl, e.points[0].z + e.z, e.h || 30, top);
+      break;
+    }
+    case 'curve': if (e.points.length >= 2) p.line(catmull3(e.points.map((q) => [q.a, q.b, q.z] as V3)), INK, 1.4); break;
+    case 'lathe': {
+      const { a, b } = spot(e, 0);
+      lathe(p, a, b, e.z, e.points.map((q) => [Math.abs(q.a), q.z] as [number, number]), e.color === 'white' ? '#FFFFFF' : PALETTE[e.color]);
       break;
     }
     case 'lines': if (e.points.length >= 2) p.line(e.points.map((q) => [q.a, q.b, q.z] as V3), INK, 1.3); break;
@@ -370,7 +466,7 @@ export function drawElement(p: Pen, e: El) {
 }
 
 /** 가구(세부) 요소: 선 굵기를 따로 조절한다 */
-export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'prism', 'lines', 'panel', 'counter']);
+export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'prism', 'lines', 'panel', 'counter', 'curve', 'lathe']);
 const scaleWidths = (body: string, k: number) => (k === 1 ? body : body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * k).toFixed(2)}"`));
 
 export function renderSVG(scene: Scene, opts: { wscale?: number; wdetail?: number; bg?: string | null; only?: (e: El) => boolean } = {}) {
@@ -395,4 +491,15 @@ export function renderElement(e: El, wscale = 1.35) {
   let body = pen.out.join('');
   if (wscale !== 1) body = body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * wscale).toFixed(2)}"`);
   return body;
+}
+
+/** 요소가 화면에서 차지하는 범위(x0, y0, x1, y1). 점처럼 놓는 가구는 기본 크기로 잡는다. */
+export function screenBox(e: El, pad = 8): [number, number, number, number] {
+  let a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1);
+  if (a1 - a0 < 1 && b1 - b0 < 1) { a0 -= 22; a1 += 22; b0 -= 22; b1 += 22; }
+  const top = e.z + Math.max(e.h || 0, ['chair', 'taskChair'].includes(e.kind) ? 90 : ['monitor', 'laptop'].includes(e.kind) ? 45 : ['plant'].includes(e.kind) ? 80 : 30);
+  const pts = e.points.length ? e.points.flatMap((q) => [P(q.a, q.b, q.z), P(q.a, q.b, q.z + (e.h || 0))]) :
+    [a0, a1].flatMap((a) => [b0, b1].flatMap((b) => [P(a, b, e.z), P(a, b, top)]));
+  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+  return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
 }

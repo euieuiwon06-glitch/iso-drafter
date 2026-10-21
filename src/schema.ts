@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 export const KINDS = [
   'slab', 'floor', 'wall', 'glass', 'rail', 'door', 'shaft',
-  'table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'counter', 'panel', 'prism', 'lines',
+  'table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'counter', 'panel', 'prism', 'lines', 'curve', 'lathe',
   'stairs', 'route', 'node',
 ] as const;
 export type Kind = (typeof KINDS)[number];
@@ -38,7 +38,7 @@ export type Scene = { width: number; height: number; elements: El[] };
 export const KIND_LABEL: Record<Kind, string> = {
   slab: '바닥판', floor: '바닥 면(색)', wall: '벽(불투명)', glass: '유리벽', rail: '난간', door: '문틀', shaft: '샤프트',
   table: '책상', chair: '의자', taskChair: '사무 의자', stool: '스툴', sofa: '소파', roundTable: '원형 테이블',
-  shelf: '책장', monitor: '모니터', laptop: '노트북', plant: '화분', box: '상자', armchair: '안락의자', planter: '긴 화분', counter: '조리대', panel: '판(보드·TV)', prism: '다각 입체', lines: '세부 선', stairs: '계단', route: '동선', node: '노드',
+  shelf: '책장', monitor: '모니터', laptop: '노트북', plant: '화분', box: '상자', armchair: '안락의자', planter: '긴 화분', counter: '조리대', panel: '판(보드·TV)', prism: '다각·곡선 입체', lines: '세부 선', curve: '3D 곡선', lathe: '회전체(화병·조명)', stairs: '계단', route: '동선', node: '노드',
 };
 
 // 요소별 기본값: 에디터에서 새로 추가할 때 (a,b)는 화면 중앙으로 옮겨진다.
@@ -63,6 +63,8 @@ export function defaults(kind: Kind): El {
     case 'panel': return { ...base, a1: 120, b1: 0, z: 60, h: 80, n: 1 };
     case 'prism': return { ...base, points: [{ a: 0, b: 0, z: 0 }, { a: 80, b: 0, z: 0 }, { a: 80, b: 50, z: 0 }, { a: 0, b: 50, z: 0 }], h: 40 };
     case 'lines': return { ...base, points: [{ a: 0, b: 0, z: 40 }, { a: 80, b: 0, z: 40 }] };
+    case 'curve': return { ...base, points: [{ a: 0, b: 0, z: 40 }, { a: 30, b: 10, z: 70 }, { a: 70, b: 0, z: 60 }] };
+    case 'lathe': return { ...base, a1: 0, b1: 0, points: [{ a: 10, b: 0, z: 0 }, { a: 16, b: 0, z: 18 }, { a: 8, b: 0, z: 40 }, { a: 6, b: 0, z: 50 }] };
     case 'monitor': return { ...base, a1: 0, b1: 0, z: 74, dir: '+a' };
     case 'sofa': return { ...base, a1: 80, b1: 140, dir: '+b' };
     case 'roundTable': return { ...base, a1: 84, b1: 84, h: 72 };
@@ -73,7 +75,7 @@ export function defaults(kind: Kind): El {
 }
 
 /** 점 목록으로 모양을 정하는 종류 */
-export const POINT_KINDS = new Set<string>(['floor', 'route', 'prism', 'lines']);
+export const POINT_KINDS = new Set<string>(['floor', 'route', 'prism', 'lines', 'curve']);
 
 let seq = 0;
 export const newId = () => `e${Date.now().toString(36)}${(seq++).toString(36)}`;

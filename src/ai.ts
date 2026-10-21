@@ -39,6 +39,10 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - counter: kitchen counter / island / reception desk, footprint and height as measured, n = number of sinks.
 - panel: thin board on a wall - whiteboard, TV, screen, artwork, door leaf - from (a0,b0) to (a1,b1) along the wall, z = bottom height, h = panel height, n = 1 for an inner frame.
 - prism: any object with a non-rectangular footprint (L-shaped desk, curved bench, rounded sofa, odd cabinet): points = footprint polygon corners at its base z, h = height.
+- prism with n = 1: SMOOTH curved outline - points become control points of a closed smooth curve (rounded sofa, kidney/oval/organic table, curved counter or bench, rounded cabinet ends, pebble ottoman).
+- curve: smooth 3D curve through points (ink line) for curved details - bent chair backs and armrests, faucet spouts, lamp arms, plant stems, cables, handles, curved rails. Use many.
+- lathe: round turned object - vase, flower pot, lamp, bottle, cup, bowl, round stool, pedestal, toilet bowl, washbasin. a0,b0 = centre on the floor plan, z = base height, points = profile from bottom to top as [radius, 0, height above base].
+- floor with m = 1: smooth curved outline (round or organic rugs).
 - lines: extra ink detail drawn on surfaces - cabinet door and drawer seams, panel divisions, handles, mullions, desk privacy screens, keyboard outlines. points = 3D polyline. Use liberally to reach the original's level of detail.
 - box: any small box-like object - crate, carton on a shelf, cabinet, counter, appliance, printer, locker, planter box, robot body. Footprint and height as measured; color white unless clearly green.
 - stairs: footprint a0..a1 x b0..b1, total drop h (the floor it descends from is h above the base), n steps, dir = descending direction. Base coordinates are those of the lower floor.
@@ -52,6 +56,7 @@ QUALITY - DENSITY AND TRUE SIZE (most important):
 - True size: measure every footprint by reading the grid at the object's actual corners. Do not enlarge objects, do not round sizes up, do not make furniture chunkier than drawn. Small things stay small (chairs ~20-35, monitors ~25-45 wide in typical drawings - but always trust your measurement over these hints). Snap to multiples of 5 only when that changes a size by less than 10%.
 - Respect the room structure: every object sits inside the room it is in, on that room's floor; furniture never crosses or overlaps a wall; walls meet at real corners and follow the original wall lines exactly. Do not invent walls, partitions or objects that are not drawn.
 - Keep spacing: rows of chairs/desks keep the original count and pitch.
+- Curves: wherever the original is curved (round tables, rugs, pots, vases, lamps, armchairs, rounded furniture, sanitary ware), use lathe / prism n=1 / curve / round floor - never approximate a curved object with boxes.
 - Use the most specific kind for each object (sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
 - Straighten anything the source drew slightly off-axis.`;
 
@@ -122,7 +127,7 @@ export const hostedInClaude = inClaude;
 // 한 줄에 요소 하나(JSON 배열). 응답이 길이 한도에서 잘려도 완성된 줄은 살릴 수 있다.
 const LINE_FORMAT = `OUTPUT FORMAT (strict): reply with one element per line, each line a JSON array, nothing else - no prose, no code fence:
 [kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points]
-kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for floor/prism/lines, else [].
+kind one of ${KINDS.join('|')}; dir one of ${DIRS.join('|')}; color one of ${COLORS.join('|')}; note a short string; points [[a,b,z],...] for floor/prism/lines/curve/lathe, else [].
 Example line: ["table",1990,2460,240,330,0,72,0,0,"+b","white","meeting table",[]]`;
 
 // data: URL → Blob. 아티팩트에서는 fetch()가 막혀 있어 직접 디코딩한다.

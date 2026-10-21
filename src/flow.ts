@@ -5,7 +5,8 @@ import { saveFile } from './platform';
 import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
-import { renderSVG } from './iso';
+import { renderSVG, DETAIL_KINDS, screenBox } from './iso';
+import { traceDetails } from './trace';
 import { newId, type El, type Scene } from './schema';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -266,7 +267,7 @@ function showPreview(els: El[]) {
 
 function finish(els: El[], stats: Stats, secs: number) {
   result = { width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: withIds(els) };
-  renderResult();
+  void renderResult();
   $('resStats').textContent =
     `요소 ${els.length}개 · ${secs}초` +
     (stats.lines ? ` · 투시 오차 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '');
@@ -277,14 +278,41 @@ let resW = 1.35;          // 구조선 굵기 배율(다운로드에도 적용)
 let resD = 1.0;           // 가구선 굵기 배율
 let cmpX = 50;            // 비교 슬라이더 위치(%)
 
-function renderResult() {
+let detailMode: 'trace' | 'shapes' = 'shapes';
+let renderSeq = 0;
+
+/** 결과 SVG: 구조는 도형, 가구·제품은 (선택에 따라) 원본에서 딴 곡선 패스 */
+async function resultSvg(): Promise<string> {
+  if (!result) return '';
+  if (detailMode === 'shapes' || !rectImg) return renderSVG(result, { wscale: resW, wdetail: resD });
+  const structure = { ...result, elements: result.elements.filter((e) => !DETAIL_KINDS.has(e.kind)) };
+  const structSvg = renderSVG(structure, { wscale: resW });
+  const key = `${rectUrl?.length}:${structure.elements.length}:${JSON.stringify(structure.elements.map((e) => [e.a0, e.b0, e.a1, e.b1, e.z, e.h]))}`;
+  const regions = result.elements.filter((e) => DETAIL_KINDS.has(e.kind)).map((e) => screenBox(e));
+  const paths = await traceDetails(rectImg, structSvg, regions, key, (t) => ($('traceState').textContent = t));
+  const sw = (1.6 * resD).toFixed(2);
+  const group = `<g id="details" fill="none" stroke="#2B2B2B" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="${paths.join('')}"/></g>`;
+  return structSvg.replace(/<\/svg>$/, `${group}</svg>`);
+}
+
+async function renderResult() {
   if (!result) return;
-  const svg = renderSVG(result, { wscale: resW, wdetail: resD });
+  const seq = ++renderSeq;
+  const busy = detailMode === 'trace';
+  if (busy) $('traceState').textContent = '가구·제품 선을 곡선으로 따는 중… (몇 초)';
+  const svg = await resultSvg();
+  if (seq !== renderSeq) return;
+  $('traceState').textContent = '';
   if (svgUrl) URL.revokeObjectURL(svgUrl);
   svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   ($('resSvg') as HTMLImageElement).src = svgUrl;
   ($('resUnder') as HTMLImageElement).src = rectUrl ?? '';
 }
+$('detailMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.onclick = () => {
+  detailMode = b.dataset.m as 'trace' | 'shapes';
+  $('detailMode').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+  void renderResult();
+}));
 
 // 보기 모드: 비교 슬라이더 / 결과만 / 원본만
 const cmp = $('cmp');
@@ -320,7 +348,7 @@ function setStroke(w: number, d: number) {
   ($('rngResDetail') as HTMLInputElement).value = String(Math.round(d * 100));
   $('resStrokeVal').textContent = w.toFixed(2);
   $('resDetailVal').textContent = d.toFixed(2);
-  clearTimeout(strokeT); strokeT = window.setTimeout(renderResult, 60);
+  clearTimeout(strokeT); strokeT = window.setTimeout(() => void renderResult(), 120);
 }
 ($('rngResStroke') as HTMLInputElement).oninput = (ev) => setStroke(+(ev.target as HTMLInputElement).value / 100, resD);
 ($('rngResDetail') as HTMLInputElement).oninput = (ev) => setStroke(resW, +(ev.target as HTMLInputElement).value / 100);
@@ -345,7 +373,7 @@ $('btnStop').onclick = () => {
 };
 $('btnResSvg').onclick = () => {
   if (!result) return;
-  void saveFile('iso-drawing.svg', renderSVG(result, { wscale: resW, wdetail: resD }), 'image/svg+xml');
+  void resultSvg().then((svg) => saveFile('iso-drawing.svg', svg, 'image/svg+xml'));
 };
 $('btnResEdit').onclick = async () => { if (result) { await loadIntoEditor(result, rectUrl); show('editor'); } };
 $('btnResNew').onclick = () => { offerResume(); show('upload'); };
