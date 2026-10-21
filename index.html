@@ -60,13 +60,23 @@
 
     <section id="stepResult" class="pane result" hidden>
       <div class="result-view" id="resultView">
-        <img id="resUnder" alt="교정된 원본" />
-        <img id="resSvg" alt="변환 결과" />
+        <div class="cmp" id="cmp">
+          <img id="resUnder" alt="원본(투시 교정본)" />
+          <img id="resSvg" alt="변환 결과" />
+          <span class="cmp-tag left">원본</span>
+          <span class="cmp-tag right">결과</span>
+          <div class="cmp-handle" id="cmpHandle" role="slider" aria-label="비교 위치" tabindex="0"><i></i></div>
+        </div>
       </div>
       <div class="result-side">
         <h2>완료</h2>
         <p class="muted" id="resStats"></p>
-        <label class="field"><span>원본 겹쳐 보기</span><input id="rngCompare" type="range" min="0" max="100" value="0" /></label>
+        <div class="field"><span>보기</span>
+          <div class="seg" id="cmpMode">
+            <button class="on" data-m="wipe">비교 슬라이더</button><button data-m="result">결과만</button><button data-m="orig">원본만</button>
+          </div>
+        </div>
+        <label class="field"><span>선 굵기 <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="50" max="300" value="135" /></label>
         <div class="stack">
           <button class="btn dark" id="btnResSvg">SVG 다운로드</button>
           <button class="btn" id="btnResEdit">에디터에서 다듬기</button>

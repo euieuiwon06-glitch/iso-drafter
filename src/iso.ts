@@ -47,6 +47,11 @@ class Pen {
     for (let i = 0; i < 40; i++) { const t = (2 * Math.PI * i) / 40; pts.push([a + r * Math.cos(t), b + r * Math.sin(t), z]); }
     this.poly(pts, fill, INK, sw);
   }
+  /** 화면 기준 원(잎 덩어리 등) */
+  blob(a: number, b: number, z: number, r: number, fill: string, sw = 1.3) {
+    const [x, y] = P(a, b, z);
+    this.out.push(`<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" fill="${fill}" stroke="${INK}" stroke-width="${sw}"/>`);
+  }
   node(a: number, b: number, z: number, r = 27) {
     const [x, y] = P(a, b, z);
     this.out.push(`<g transform="translate(${f(x)} ${f(y)})"><circle r="${f(r * 1.25)}" fill="#E7FAEF"/><circle r="${f(r)}" fill="${ROUTE}"/>` +
@@ -141,6 +146,14 @@ function stairs(p: Pen, e: El) {
 }
 
 // ---------------------------------------------------------------- element dispatch
+/** 점처럼 놓는 가구: 발자국(a0..a1 × b0..b1)이 있으면 그 중심과 크기, 없으면 (a0,b0)와 기본 크기 */
+function spot(e: El, def: number) {
+  const da = Math.abs(e.a1 - e.a0), db = Math.abs(e.b1 - e.b0);
+  if (da < 1 && db < 1) return { a: e.a0, b: e.b0, k: 1 };
+  const size = Math.max(da, db);
+  return { a: (e.a0 + e.a1) / 2, b: (e.b0 + e.b1) / 2, k: def ? Math.max(0.35, Math.min(3, size / def)) : 1 };
+}
+
 export function drawElement(p: Pen, e: El) {
   const col = PALETTE[e.color] ?? '#FFFFFF';
   switch (e.kind) {
@@ -164,24 +177,40 @@ export function drawElement(p: Pen, e: El) {
       break;
     }
     case 'table': table(p, e.a0, e.a1, e.b0, e.b1, e.z, e.h || 74); break;
-    case 'chair': chair(p, e.a0, e.b0, e.z, e.dir); break;
+    case 'chair': { const { a, b, k } = spot(e, 26); chair(p, a, b, e.z, e.dir, 26 * k, 44 * k, 40 * k); break; }
     case 'taskChair': {
-      const { a0: a, b0: b, z } = e;
+      const { a, b, k } = spot(e, 30), z = e.z;
       for (let ang = 0; ang < 360; ang += 72) {
         const r = (ang * Math.PI) / 180;
-        p.line([[a, b, z + 6], [a + 20 * Math.cos(r), b + 20 * Math.sin(r), z + 2]], INK, 2.2);
+        p.line([[a, b, z + 6 * k], [a + 20 * k * Math.cos(r), b + 20 * k * Math.sin(r), z + 2 * k]], INK, 2.2);
       }
-      p.line([[a, b, z + 6], [a, b, z + 40]], INK, 2.6);
-      chair(p, a, b, z - 4, e.dir, 30, 44, 36, '#5A5A5A');
+      p.line([[a, b, z + 6 * k], [a, b, z + 40 * k]], INK, 2.6);
+      chair(p, a, b, z - 4 * k, e.dir, 30 * k, 44 * k, 36 * k, '#5A5A5A');
       break;
     }
     case 'stool': {
-      const { a0: a, b0: b, z } = e, h = e.h || 62;
+      const { a, b, k } = spot(e, 22), z = e.z, h = e.h || 62;
       for (const [da, db] of [[-8, -8], [8, -8], [-8, 8], [8, 8]])
-        p.line([[a + da, b + db, z], [a + da * 0.6, b + db * 0.6, z + h]], INK, 1.6);
-      p.box(a - 11, a + 11, b - 11, b + 11, z + h, 4, '#FFFFFF', '#E6E6E6', '#DADADA', INK, 1.5);
+        p.line([[a + da * k, b + db * k, z], [a + da * 0.6 * k, b + db * 0.6 * k, z + h]], INK, 1.6);
+      p.box(a - 11 * k, a + 11 * k, b - 11 * k, b + 11 * k, z + h, 4, '#FFFFFF', '#E6E6E6', '#DADADA', INK, 1.5);
       break;
     }
+    case 'plant': {
+      // 화분 + 잎 덩어리(초록 타원 여러 개)
+      const { a, b, k } = spot(e, 30), z = e.z, h = e.h || 60 * k, r = 15 * k;
+      const pot = Math.min(h * 0.45, 26 * k);
+      p.box(a - r * 0.7, a + r * 0.7, b - r * 0.7, b + r * 0.7, z, pot, '#FFFFFF', '#F0F0F0', '#E2E2E2', INK, 1.6);
+      // 잎: 아래 큰 덩어리 → 위 작은 덩어리 순서로 겹쳐 덤불처럼
+      const top = z + h, mid = z + pot + (h - pot) * 0.45;
+      const leaves: [number, number, number, number, string][] = [
+        [-0.55, 0.35, mid, 0.55, '#2F8F55'], [0.55, -0.3, mid, 0.55, '#2F8F55'], [0.1, 0.6, mid + (top - mid) * 0.3, 0.5, '#37A060'],
+        [-0.35, -0.45, mid + (top - mid) * 0.35, 0.5, '#37A060'], [0, 0, mid + (top - mid) * 0.55, 0.6, '#3FAE6A'],
+        [0.35, 0.2, top - (top - mid) * 0.25, 0.45, '#4CBB76'], [-0.25, 0.05, top, 0.42, '#55C47E'],
+      ];
+      for (const [da, db, zz, rf, col] of leaves) p.blob(a + da * r, b + db * r, zz, r * rf * 1.1, col, 1.2);
+      break;
+    }
+    case 'box': p.box(e.a0, e.a1, e.b0, e.b1, e.z, e.h || 30, e.color === 'white' ? '#FFFFFF' : PALETTE[e.color], '#F0F0F0', '#E2E2E2', INK, 1.8); break;
     case 'sofa': {
       const a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1), z0 = e.z;
       const W = ['#FFFFFF', '#F0F0F0', '#E2E2E2'] as const;
@@ -206,21 +235,21 @@ export function drawElement(p: Pen, e: El) {
     }
     case 'shelf': shelf(p, e); break;
     case 'monitor': {
-      const { a0: a, b0: b, z } = e, w = 42, h = 30;
-      if (e.dir === '+a' || e.dir === '-a') p.box(a - w / 2, a + w / 2, b - 2, b + 2, z + 10, h, '#FFFFFF', '#FFFFFF', '#E6E6E6', INK, 2.0);
-      else p.box(a - 2, a + 2, b - w / 2, b + w / 2, z + 10, h, '#FFFFFF', '#E6E6E6', '#FFFFFF', INK, 2.0);
-      p.line([[a, b, z], [a, b, z + 10]], INK, 2.0);
+      const { a, b, k } = spot(e, 42), z = e.z, w = 42 * k, h = 30 * k;
+      if (e.dir === '+a' || e.dir === '-a') p.box(a - w / 2, a + w / 2, b - 2, b + 2, z + 10 * k, h, '#FFFFFF', '#FFFFFF', '#E6E6E6', INK, 2.0);
+      else p.box(a - 2, a + 2, b - w / 2, b + w / 2, z + 10 * k, h, '#FFFFFF', '#E6E6E6', '#FFFFFF', INK, 2.0);
+      p.line([[a, b, z], [a, b, z + 10 * k]], INK, 2.0);
       break;
     }
     case 'laptop': {
-      const { a0: a, b0: b, z } = e, w = 30, d = 22;
+      const { a, b, k } = spot(e, 30), z = e.z, w = 30 * k, d = 22 * k;
       p.poly([[a - w / 2, b - d / 2, z + 1], [a + w / 2, b - d / 2, z + 1], [a + w / 2, b + d / 2, z + 1], [a - w / 2, b + d / 2, z + 1]], '#DADADA', INK, 1.5);
-      p.poly([[a - w / 2, b + d / 2, z + 1], [a + w / 2, b + d / 2, z + 1], [a + w / 2, b + d / 2, z + 20], [a - w / 2, b + d / 2, z + 20]], '#BFBFBF', INK, 1.5);
+      p.poly([[a - w / 2, b + d / 2, z + 1], [a + w / 2, b + d / 2, z + 1], [a + w / 2, b + d / 2, z + 20 * k], [a - w / 2, b + d / 2, z + 20 * k]], '#BFBFBF', INK, 1.5);
       break;
     }
     case 'stairs': stairs(p, e); break;
     case 'route': if (e.points.length >= 2) p.line(e.points.map((q) => [q.a, q.b, q.z] as V3), ROUTE, 12); break;
-    case 'node': p.node(e.a0, e.b0, e.z); break;
+    case 'node': { const { a, b } = spot(e, 0); p.node(a, b, e.z); break; }
   }
 }
 

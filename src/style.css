@@ -161,8 +161,6 @@ dialog .spacer { flex: 1; }
 .run-preview, .result-view { position: relative; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--canvas); min-height: 0; }
 .run-preview img { max-width: 100%; max-height: calc(100vh - 100px); object-fit: contain; background: var(--paper); box-shadow: 0 2px 16px rgba(0,0,0,.08); }
 .result-view { display: grid; place-items: center; }
-.result-view img { grid-area: 1 / 1; max-width: 100%; max-height: calc(100vh - 100px); object-fit: contain; }
-.result-view #resUnder { background: var(--paper); box-shadow: 0 2px 16px rgba(0,0,0,.08); }
 .run-side, .result-side { background: var(--panel); border-left: 1px solid var(--line); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
 .run-side h2, .result-side h2 { font-size: 16px; margin: 0; }
 .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -206,3 +204,27 @@ dialog .spacer { flex: 1; }
 #runMsg { white-space: pre-line; }
 .resume { width: min(620px, 100%); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--green-bg); }
 .resume span { flex: 1; min-width: 200px; }
+
+/* ---------------------------------------------------------------- before / after */
+.cmp { position: relative; display: inline-grid; max-width: 100%; max-height: calc(100vh - 100px); touch-action: none; user-select: none; cursor: ew-resize; }
+.cmp img { grid-area: 1 / 1; display: block; max-width: 100%; max-height: calc(100vh - 100px); object-fit: contain; background: var(--paper); pointer-events: none; }
+.cmp #resUnder { box-shadow: 0 2px 16px rgba(0,0,0,.08); }
+.cmp.wipe #resSvg { clip-path: inset(0 0 0 var(--x, 50%)); }
+.cmp.result #resUnder, .cmp.orig #resSvg { visibility: hidden; }
+.cmp.result #resSvg { box-shadow: 0 2px 16px rgba(0,0,0,.08); }
+.cmp-handle { position: absolute; top: 0; bottom: 0; left: var(--x, 50%); width: 0; display: none; }
+.cmp.wipe .cmp-handle { display: block; }
+.cmp-handle::before { content: ''; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--green); }
+.cmp-handle i { position: absolute; top: 50%; left: -16px; width: 32px; height: 32px; margin-top: -16px; border-radius: 50%; background: var(--green); box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+.cmp-handle i::before, .cmp-handle i::after { content: ''; position: absolute; top: 11px; border: 5px solid transparent; }
+.cmp-handle i::before { left: 4px; border-right-color: var(--on-accent); }
+.cmp-handle i::after { right: 4px; border-left-color: var(--on-accent); }
+.cmp-handle:focus-visible i { outline: 2px solid var(--sel); outline-offset: 2px; }
+.cmp-tag { position: absolute; top: 10px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; letter-spacing: .02em; background: color-mix(in srgb, var(--ink) 78%, transparent); color: var(--panel); pointer-events: none; }
+.cmp-tag.left { left: 10px; } .cmp-tag.right { right: 10px; }
+.cmp:not(.wipe) .cmp-tag { display: none; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { flex: 1; height: 30px; border: 0; background: var(--field); cursor: pointer; font-size: 12px; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--green-bg); color: var(--ink); font-weight: 600; }
+.field span b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }

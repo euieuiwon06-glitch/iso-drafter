@@ -49,7 +49,7 @@ type StepKey = 'rect' | 'draft' | `fix${number}` | 'done';
 type Stats = { lines: number; before: number; after: number };
 
 // 단계별 예상 시간(초). 구독 호출 기준 관측치에 여유를 둔 범위.
-const ETA = { rect: [5, 20], draft: [90, 240], fix: [60, 180], done: [1, 2] } as const;
+const ETA = { rect: [5, 20], draft: [120, 300], fix: [90, 240], done: [1, 2] } as const;
 const etaOf = (k: string): readonly [number, number] => (k === 'rect' ? ETA.rect : k === 'draft' ? ETA.draft : k === 'done' ? ETA.done : ETA.fix);
 const fmt = (sec: number) => (sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분${Math.round(sec % 60) ? ` ${Math.round(sec % 60)}초` : ''}`);
 const fmtRange = ([a, b]: readonly [number, number]) => (b < 60 ? `${a}~${b}초` : `${Math.round(a / 60 * 2) / 2}~${Math.round(b / 60 * 2) / 2}분`);
@@ -273,21 +273,51 @@ function finish(els: El[], stats: Stats, secs: number) {
   show('result');
 }
 
+let resW = 1.35;          // 결과 선 굵기 배율(다운로드에도 적용)
+let cmpX = 50;            // 비교 슬라이더 위치(%)
+
 function renderResult() {
   if (!result) return;
-  const svg = renderSVG(result);
+  const svg = renderSVG(result, { wscale: resW });
   if (svgUrl) URL.revokeObjectURL(svgUrl);
   svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   ($('resSvg') as HTMLImageElement).src = svgUrl;
   ($('resUnder') as HTMLImageElement).src = rectUrl ?? '';
-  applyCompare();
 }
-function applyCompare() {
-  const v = +($('rngCompare') as HTMLInputElement).value / 100;
-  $('resSvg').style.opacity = String(1 - v * 0.75);
-  $('resUnder').style.opacity = String(v);
+
+// 보기 모드: 비교 슬라이더 / 결과만 / 원본만
+const cmp = $('cmp');
+function setMode(m: string) {
+  cmp.className = `cmp ${m}`;
+  $('cmpMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === m));
 }
-($('rngCompare') as HTMLInputElement).oninput = applyCompare;
+$('cmpMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.onclick = () => setMode(b.dataset.m!)));
+setMode('wipe');
+
+function setX(x: number) {
+  cmpX = Math.max(0, Math.min(100, x));
+  cmp.style.setProperty('--x', `${cmpX}%`);
+  $('cmpHandle').setAttribute('aria-valuenow', String(Math.round(cmpX)));
+}
+setX(50);
+let dragging = false;
+const xFrom = (ev: PointerEvent) => { const r = cmp.getBoundingClientRect(); return ((ev.clientX - r.left) / r.width) * 100; };
+cmp.addEventListener('pointerdown', (ev) => { if (!cmp.classList.contains('wipe')) return; dragging = true; cmp.setPointerCapture(ev.pointerId); setX(xFrom(ev)); });
+cmp.addEventListener('pointermove', (ev) => { if (dragging) setX(xFrom(ev)); });
+cmp.addEventListener('pointerup', () => (dragging = false));
+cmp.addEventListener('pointercancel', () => (dragging = false));
+$('cmpHandle').addEventListener('keydown', (ev) => {
+  if (ev.key === 'ArrowLeft') { setX(cmpX - (ev.shiftKey ? 10 : 2)); ev.preventDefault(); }
+  if (ev.key === 'ArrowRight') { setX(cmpX + (ev.shiftKey ? 10 : 2)); ev.preventDefault(); }
+});
+
+// 선 굵기
+let strokeT: number | undefined;
+($('rngResStroke') as HTMLInputElement).oninput = (ev) => {
+  resW = +(ev.target as HTMLInputElement).value / 100;
+  $('resStrokeVal').textContent = resW.toFixed(2);
+  clearTimeout(strokeT); strokeT = window.setTimeout(renderResult, 60);
+};
 
 // ---------------------------------------------------------------- buttons
 const fileInput = $('fileConvert') as HTMLInputElement;
@@ -306,7 +336,7 @@ $('btnStop').onclick = () => {
 };
 $('btnResSvg').onclick = () => {
   if (!result) return;
-  void saveFile('iso-drawing.svg', renderSVG(result), 'image/svg+xml');
+  void saveFile('iso-drawing.svg', renderSVG(result, { wscale: resW }), 'image/svg+xml');
 };
 $('btnResEdit').onclick = async () => { if (result) { await loadIntoEditor(result, rectUrl); show('editor'); } };
 $('btnResNew').onclick = () => { offerResume(); show('upload'); };

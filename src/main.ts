@@ -108,7 +108,7 @@ function handlesFor(e: El): Handle[] {
     return hs;
   }
   const pointKinds: Kind[] = ['chair', 'taskChair', 'stool', 'monitor', 'laptop', 'node'];
-  if (pointKinds.includes(e.kind)) return hs;
+  if (pointKinds.includes(e.kind) && Math.abs(e.a1 - e.a0) < 1 && Math.abs(e.b1 - e.b0) < 1) return hs;
   const base = e.kind === 'slab' ? e.z : e.z;
   hs.push({ ...pt(e.a0, e.b0, base), apply: (el, dA, dB, _dz, fr, o) => { el.a0 = snap(o.a0 + dA, fr); el.b0 = snap(o.b0 + dB, fr); } });
   hs.push({ ...pt(e.a1, e.b1, base), apply: (el, dA, dB, _dz, fr, o) => { el.a1 = snap(o.a1 + dA, fr); el.b1 = snap(o.b1 + dB, fr); } });
@@ -122,7 +122,7 @@ function handlesFor(e: El): Handle[] {
 function footprint(e: El): string {
   const pts: [number, number][] = [];
   if (e.kind === 'route' || e.kind === 'floor') e.points.forEach((q) => pts.push(P(q.a, q.b, q.z)));
-  else if (['chair', 'taskChair', 'stool', 'monitor', 'laptop', 'node'].includes(e.kind)) {
+  else if (['chair', 'taskChair', 'stool', 'monitor', 'laptop', 'node'].includes(e.kind) && Math.abs(e.a1 - e.a0) < 1 && Math.abs(e.b1 - e.b0) < 1) {
     const r = e.kind === 'node' ? 34 : 18;
     for (const [da, db] of [[-r, -r], [r, -r], [r, r], [-r, r]]) pts.push(P(e.a0 + da, e.b0 + db, e.z));
   } else if (['glass', 'rail', 'door'].includes(e.kind)) {

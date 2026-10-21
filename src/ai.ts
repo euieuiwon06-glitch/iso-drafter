@@ -26,20 +26,26 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - door: empty door frame from (a0,b0) to (a1,b1), height h.
 - shaft: translucent green vertical shaft / elevator, footprint a0..a1 x b0..b1, from z up h (h may be large to span levels: measure it from its visible screen height). Draws a dashed green centre line.
 - table: desk/table footprint a0..a1 x b0..b1, height h (72-110).
-- chair, taskChair (office chair, dark seat): centre (a0,b0); dir = direction the sitter faces (+a,-a,+b,-b).
-- stool: bar stool centre (a0,b0), height h (55-75).
+- chair, taskChair (office chair, dark seat): footprint a0..a1 x b0..b1 = the seat as measured on the grid (usually 18-35 units); dir = direction the sitter faces (+a,-a,+b,-b).
+- stool: bar stool, footprint = seat as measured, height h (55-75).
 - sofa: footprint a0..a1 x b0..b1; dir +b/-b = back along the B1 edge, +a/-a = back along the A0 edge.
 - roundTable: footprint a0..a1 x b0..b1 (diameter), height h.
 - shelf: bookcase box a0..a1 x b0..b1, height h, n rows, m columns; dir -b = open face on the B0 side, +a = open face on the A1 side (only these two faces are visible; use them).
-- monitor: centre (a0,b0) at z = desk height; dir +a/-a = screen spans along A, +b/-b = along B.
-- laptop: centre (a0,b0) at z = table height.
+- monitor: footprint = the screen width as measured (a0..a1 or b0..b1 along the screen), z = desk height; dir +a/-a = screen spans along A, +b/-b = along B.
+- laptop: footprint as measured, z = table height.
+- plant: potted plant, footprint = foliage width as measured, h = total height. Output EVERY plant separately (planter rows: one plant element per visible plant).
+- box: any small box-like object - crate, carton on a shelf, cabinet, counter, appliance, printer, locker, planter box, robot body. Footprint and height as measured; color white unless clearly green.
 - stairs: footprint a0..a1 x b0..b1, total drop h (the floor it descends from is h above the base), n steps, dir = descending direction. Base coordinates are those of the lower floor.
 - route: green circulation line, "points" polyline (axis-aligned segments wherever the image shows corners; follow stairs with straight diagonal segments).
 - node: route marker circle, centre (a0,b0).
 
 DRAW ORDER: the renderer paints elements in array order (painter's algorithm). Output back-to-front: lower/farther floors before nearer ones; within a floor: slab, floor colors, back walls, furniture from far (small A, large B) to near, front glass/rails, then shafts, then routes, then nodes last.
 
-QUALITY: capture every room, wall, glass partition, rail and furniture group visible in the image, with dimensions snapped to multiples of 5. Straighten anything the source drew slightly off-axis. Prefer many correct simple elements over few vague ones.`;
+QUALITY - DENSITY AND TRUE SIZE (most important):
+- Match the original's level of detail. Every individual object the image shows becomes its own element: each chair, each monitor, each laptop, each plant, each box on a shelf rack, each cabinet, each door frame, each glass panel run, each rail. Never summarise a group ("a row of desks") as one bigger element, and never skip small objects. A detailed office drawing usually needs 150-400 elements; a band of it 60-200.
+- True size: measure every footprint by reading the grid at the object's actual corners. Do not enlarge objects, do not round sizes up, do not make furniture chunkier than drawn. Small things stay small (chairs ~20-35, monitors ~25-45 wide in typical drawings - but always trust your measurement over these hints). Snap to multiples of 5 only when that changes a size by less than 10%.
+- Keep spacing: rows of chairs/desks keep the original count and pitch.
+- Straighten anything the source drew slightly off-axis.`;
 
 export function getKey() { try { return localStorage.getItem('iso-drafter:key') ?? ''; } catch { return ''; } }
 export function setKey(k: string) { try { localStorage.setItem('iso-drafter:key', k); } catch { /* 저장 불가 환경 */ } }
@@ -199,8 +205,8 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   const twoImages = lim.images.maxCount >= 2;
   const refine = !!opts.current?.length;
   const W = opts.width, H = opts.height;
-  // 구역 수: 긴 변 약 750px마다 1구역 → 호출 1번이 짧아지고 구역마다 해상도가 높아진다
-  const n = Math.max(1, Math.min(4, Math.round(Math.max(W, H) / 750)));
+  // 구역 수: 긴 변 약 550px마다 1구역 → 호출 1번이 짧아지고 구역마다 해상도가 높아진다
+  const n = Math.max(1, Math.min(5, Math.round(Math.max(W, H) / 550)));
   const regions = splitRegions(W, H, n);
   const out: El[] = [];
   // 화면 아래(앞·아래층) 구역부터: 합칠 때 아래층이 먼저 그려진다
@@ -214,7 +220,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
     const where = `This request covers one horizontal band of a larger drawing: screen pixels x ${Math.round(crop.x)}..${Math.round(crop.x + crop.w)}, y ${Math.round(crop.y)}..${Math.round(crop.y + crop.h)} of the full ${W} x ${H} image. The grid labels are GLOBAL chart coordinates of the full image - use them exactly as printed. Output every element whose main part is visible in this band (other bands are handled separately).`;
     const imgs = twoImages ? 'Image 1 is the band of the original; image 2 is the same band with the isometric grid' : 'The image is the band of the original with the isometric grid drawn over it';
     const task = refine
-      ? `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, one per line:\n${mine.map(lineOf).join('\n') || '(none)'}\n\nCompare the red lines with the original and output the corrected list for this band: move/resize elements whose red outline does not sit on the original, add anything missing, drop anything that does not exist, keep correct elements unchanged.`
+      ? `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, one per line:\n${mine.map(lineOf).join('\n') || '(none)'}\n\nCompare the red lines with the original and output the corrected list for this band: move/resize elements whose red outline does not sit on the original, add anything missing - especially small objects (each chair, plant, monitor, laptop, box, door frame) the original shows but the red drawing lacks - shrink anything drawn bigger than the original, drop anything that does not exist, keep correct elements unchanged.`
       : `${where}\n${imgs}. Build the scene elements for this band.`;
     const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
     const els = await askWithContinuation(sample, base, images, refine ? 'medium' : 'high', opts, label);

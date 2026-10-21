@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 export const KINDS = [
   'slab', 'floor', 'wall', 'glass', 'rail', 'door', 'shaft',
-  'table', 'chair', 'taskChair', 'stool', 'sofa', 'roundTable', 'shelf', 'monitor', 'laptop',
+  'table', 'chair', 'taskChair', 'stool', 'sofa', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'box',
   'stairs', 'route', 'node',
 ] as const;
 export type Kind = (typeof KINDS)[number];
@@ -38,7 +38,7 @@ export type Scene = { width: number; height: number; elements: El[] };
 export const KIND_LABEL: Record<Kind, string> = {
   slab: '바닥판', floor: '바닥 면(색)', wall: '벽(불투명)', glass: '유리벽', rail: '난간', door: '문틀', shaft: '샤프트',
   table: '책상', chair: '의자', taskChair: '사무 의자', stool: '스툴', sofa: '소파', roundTable: '원형 테이블',
-  shelf: '책장', monitor: '모니터', laptop: '노트북', stairs: '계단', route: '동선', node: '노드',
+  shelf: '책장', monitor: '모니터', laptop: '노트북', plant: '화분', box: '상자', stairs: '계단', route: '동선', node: '노드',
 };
 
 // 요소별 기본값: 에디터에서 새로 추가할 때 (a,b)는 화면 중앙으로 옮겨진다.
@@ -55,6 +55,8 @@ export function defaults(kind: Kind): El {
     case 'table': return { ...base, a1: 240, b1: 80, h: 74 };
     case 'chair': case 'taskChair': case 'stool': case 'node': case 'laptop':
       return { ...base, a1: 0, b1: 0, h: kind === 'stool' ? 62 : 0 };
+    case 'plant': return { ...base, a1: 30, b1: 30, h: 70 };
+    case 'box': return { ...base, a1: 40, b1: 40, h: 30 };
     case 'monitor': return { ...base, a1: 0, b1: 0, z: 74, dir: '+a' };
     case 'sofa': return { ...base, a1: 80, b1: 140, dir: '+b' };
     case 'roundTable': return { ...base, a1: 84, b1: 84, h: 72 };

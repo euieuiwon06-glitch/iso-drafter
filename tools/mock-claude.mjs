@@ -20,7 +20,9 @@ await page.addInitScript((mode) => {
     for (let i = 0; i < 4; i++) {
       const x = x0 + (x1 - x0) * (0.2 + 0.2 * i), y = (y0 + y1) / 2 + (i - 1.5) * 30;
       const a = Math.round((x / C + y / S) / 2), b = Math.round((x / C - y / S) / 2);
-      lines.push(JSON.stringify(['node', a, a, b, b, 0, 0, 0, 0, '+b', 'white', `n${calls}-${i}`, []]));
+      const kinds = [['plant', 30, 70], ['box', 50, 35], ['chair', 26, 0], ['taskChair', 30, 0]];
+      const [kind, sz, h] = kinds[i];
+      lines.push(JSON.stringify([kind, a, a + sz, b, b + sz, 0, h, 0, 0, '+b', 'white', `${kind}${calls}-${i}`, []]));
     }
     const text = lines.join('\n');
     opts.onText?.({ text, delta: text });
@@ -39,4 +41,6 @@ await page.waitForFunction(() => !document.getElementById('stepResult').hidden |
 console.log('finished in', Date.now() - t, 'ms | steps:', (await page.textContent('#steps')).replace(/\s+/g, ' '));
 console.log('msg:', (await page.textContent('#runMsg')).replace(/\n/g, ' / '), '| stats:', await page.textContent('#resStats'));
 await page.screenshot({ path: `${out}.png` });
+if (!(await page.isHidden('#stepResult'))) { await page.fill('#rngResStroke', '250'); await page.dispatchEvent('#rngResStroke', 'input'); await page.mouse.click(500, 450); await page.waitForTimeout(400); await page.screenshot({ path: `${out}-result.png` }); await page.click('#cmpMode button[data-m=result]'); await page.waitForTimeout(300); await page.screenshot({ path: `${out}-only.png`, clip: { x: 240, y: 180, width: 720, height: 160 } });
+  console.log('cmp class:', await page.getAttribute('#cmp', 'class'), 'x:', await page.evaluate(() => getComputedStyle(document.getElementById('cmp')).getPropertyValue('--x'))); }
 await browser.close();
