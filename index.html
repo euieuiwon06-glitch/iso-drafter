@@ -37,6 +37,9 @@
         <span>PNG · JPG · WEBP</span>
       </label>
       <div class="opts">
+        <label>선 굵기
+          <select id="selStroke"><option value="thin">가늘게</option><option value="normal" selected>보통</option><option value="bold">굵게</option></select>
+        </label>
         <label>자동 보정 횟수
           <select id="selRounds"><option value="0">0회 (빠름)</option><option value="1">1회</option><option value="2" selected>2회 (추천)</option><option value="3">3회</option></select>
         </label>
@@ -76,7 +79,8 @@
             <button class="on" data-m="wipe">비교 슬라이더</button><button data-m="result">결과만</button><button data-m="orig">원본만</button>
           </div>
         </div>
-        <label class="field"><span>선 굵기 <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="50" max="300" value="135" /></label>
+        <label class="field"><span>구조선 굵기 (벽·바닥·유리) <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="40" max="300" value="135" /></label>
+        <label class="field"><span>가구선 굵기 (의자·책상·화분 등) <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
         <div class="stack">
           <button class="btn dark" id="btnResSvg">SVG 다운로드</button>
           <button class="btn" id="btnResEdit">에디터에서 다듬기</button>

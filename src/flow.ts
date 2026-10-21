@@ -258,7 +258,7 @@ $('btnResume').onclick = () => void runJob();
 /** 진행 중에도 지금까지의 재작도를 미리 보여 준다. */
 function showPreview(els: El[]) {
   if (!rectImg) return;
-  const svg = renderSVG({ width: rectImg.naturalWidth, height: rectImg.naturalHeight, elements: els });
+  const svg = renderSVG({ width: rectImg.naturalWidth, height: rectImg.naturalHeight, elements: els }, { wscale: resW, wdetail: resD });
   if (svgUrl) URL.revokeObjectURL(svgUrl);
   svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   ($('runImg') as HTMLImageElement).src = svgUrl;
@@ -273,12 +273,13 @@ function finish(els: El[], stats: Stats, secs: number) {
   show('result');
 }
 
-let resW = 1.35;          // 결과 선 굵기 배율(다운로드에도 적용)
+let resW = 1.35;          // 구조선 굵기 배율(다운로드에도 적용)
+let resD = 1.0;           // 가구선 굵기 배율
 let cmpX = 50;            // 비교 슬라이더 위치(%)
 
 function renderResult() {
   if (!result) return;
-  const svg = renderSVG(result, { wscale: resW });
+  const svg = renderSVG(result, { wscale: resW, wdetail: resD });
   if (svgUrl) URL.revokeObjectURL(svgUrl);
   svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   ($('resSvg') as HTMLImageElement).src = svgUrl;
@@ -311,13 +312,21 @@ $('cmpHandle').addEventListener('keydown', (ev) => {
   if (ev.key === 'ArrowRight') { setX(cmpX + (ev.shiftKey ? 10 : 2)); ev.preventDefault(); }
 });
 
-// 선 굵기
+// 선 굵기: 구조선 / 가구선
 let strokeT: number | undefined;
-($('rngResStroke') as HTMLInputElement).oninput = (ev) => {
-  resW = +(ev.target as HTMLInputElement).value / 100;
-  $('resStrokeVal').textContent = resW.toFixed(2);
+function setStroke(w: number, d: number) {
+  resW = w; resD = d;
+  ($('rngResStroke') as HTMLInputElement).value = String(Math.round(w * 100));
+  ($('rngResDetail') as HTMLInputElement).value = String(Math.round(d * 100));
+  $('resStrokeVal').textContent = w.toFixed(2);
+  $('resDetailVal').textContent = d.toFixed(2);
   clearTimeout(strokeT); strokeT = window.setTimeout(renderResult, 60);
-};
+}
+($('rngResStroke') as HTMLInputElement).oninput = (ev) => setStroke(+(ev.target as HTMLInputElement).value / 100, resD);
+($('rngResDetail') as HTMLInputElement).oninput = (ev) => setStroke(resW, +(ev.target as HTMLInputElement).value / 100);
+// 업로드 화면의 선 굵기 프리셋
+const STROKE_PRESET: Record<string, [number, number]> = { thin: [0.95, 0.65], normal: [1.35, 1.0], bold: [1.9, 1.4] };
+($('selStroke') as HTMLSelectElement).onchange = (ev) => { const [w, d] = STROKE_PRESET[(ev.target as HTMLSelectElement).value]; setStroke(w, d); };
 
 // ---------------------------------------------------------------- buttons
 const fileInput = $('fileConvert') as HTMLInputElement;
@@ -336,7 +345,7 @@ $('btnStop').onclick = () => {
 };
 $('btnResSvg').onclick = () => {
   if (!result) return;
-  void saveFile('iso-drawing.svg', renderSVG(result, { wscale: resW }), 'image/svg+xml');
+  void saveFile('iso-drawing.svg', renderSVG(result, { wscale: resW, wdetail: resD }), 'image/svg+xml');
 };
 $('btnResEdit').onclick = async () => { if (result) { await loadIntoEditor(result, rectUrl); show('editor'); } };
 $('btnResNew').onclick = () => { offerResume(); show('upload'); };

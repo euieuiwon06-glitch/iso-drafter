@@ -24,7 +24,6 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - glass: vertical glass panel from (a0,b0) to (a1,b1) - axis-aligned, one of A or B constant - height h, n = number of mullions. color white (clear), green (green-tinted), gray (opaque white panel).
 - rail: low glass balustrade like glass, h 90-120, n posts.
 - door: empty door frame from (a0,b0) to (a1,b1), height h.
-- shaft: translucent green vertical shaft / elevator, footprint a0..a1 x b0..b1, from z up h (h may be large to span levels: measure it from its visible screen height). Draws a dashed green centre line.
 - table: desk/table footprint a0..a1 x b0..b1, height h (72-110).
 - chair, taskChair (office chair, dark seat): footprint a0..a1 x b0..b1 = the seat as measured on the grid (usually 18-35 units); dir = direction the sitter faces (+a,-a,+b,-b).
 - stool: bar stool, footprint = seat as measured, height h (55-75).
@@ -36,10 +35,10 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - plant: potted plant, footprint = foliage width as measured, h = total height. Output EVERY plant separately (planter rows: one plant element per visible plant).
 - box: any small box-like object - crate, carton on a shelf, cabinet, counter, appliance, printer, locker, planter box, robot body. Footprint and height as measured; color white unless clearly green.
 - stairs: footprint a0..a1 x b0..b1, total drop h (the floor it descends from is h above the base), n steps, dir = descending direction. Base coordinates are those of the lower floor.
-- route: green circulation line, "points" polyline (axis-aligned segments wherever the image shows corners; follow stairs with straight diagonal segments).
-- node: route marker circle, centre (a0,b0).
 
-DRAW ORDER: the renderer paints elements in array order (painter's algorithm). Output back-to-front: lower/farther floors before nearer ones; within a floor: slab, floor colors, back walls, furniture from far (small A, large B) to near, front glass/rails, then shafts, then routes, then nodes last.
+IGNORE ANNOTATION GRAPHICS: draw only the physical space. Diagram overlays are NOT part of the space - circulation/route lines, dashed or dotted paths, location markers, pins, target/ring nodes, translucent highlight columns or shafts, arrows, callouts, labels and text. Do not output anything for them, and draw the floor, walls and furniture behind them as if they were not there. Never use kinds route, node or shaft.
+
+DRAW ORDER: the renderer paints elements in array order (painter's algorithm). Output back-to-front: lower/farther floors before nearer ones; within a floor: slab, floor colors, back walls, furniture from far (small A, large B) to near, front glass/rails last.
 
 QUALITY - DENSITY AND TRUE SIZE (most important):
 - Match the original's level of detail. Every individual object the image shows becomes its own element: each chair, each monitor, each laptop, each plant, each box on a shelf rack, each cabinet, each door frame, each glass panel run, each rail. Never summarise a group ("a row of desks") as one bigger element, and never skip small objects. A detailed office drawing usually needs 150-400 elements; a band of it 60-200.
@@ -197,6 +196,48 @@ async function askWithContinuation(sample: NonNullable<Awaited<ReturnType<typeof
   return got;
 }
 
+// 보정은 수정분만 받는다: 언급하지 않은 요소는 그대로 남아 디테일이 줄지 않는다.
+const DELTA_FORMAT = `OUTPUT FORMAT (strict): reply with one change per line, each a JSON array, nothing else - no prose, no code fence:
+["edit", i, ELEMENT]   replace current element number i (move it / fix its size / fix its kind)
+["del", i]             remove current element number i (only if it does not exist in the original)
+["add", ELEMENT]       a missing element
+ELEMENT is [kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points] as in the element list. Elements you do not mention stay exactly as they are - so do not repeat correct elements. If nothing needs changing, output nothing.`;
+
+const footprintSize = (e: El) => Math.max(Math.abs(e.a1 - e.a0), 1) * Math.max(Math.abs(e.b1 - e.b0), 1);
+
+/** 수정분을 현재 요소들에 적용한다. 원래보다 크게 키운 수정은 크기를 무시하고 위치만 옮긴다. */
+function applyDelta(mine: El[], text: string): { kept: El[]; added: El[]; edits: number; dels: number; blocked: number } {
+  const els: (El | null)[] = mine.map((e) => ({ ...e }));
+  const added: El[] = [];
+  let edits = 0, dels = 0, blocked = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().replace(/,$/, '');
+    if (!line.startsWith('[')) continue;
+    let v: unknown;
+    try { v = JSON.parse(line); } catch { continue; }
+    if (!Array.isArray(v)) continue;
+    const [op, x, y] = v as [string, unknown, unknown];
+    if (op === 'del' && typeof x === 'number' && els[x]) { els[x] = null; dels++; continue; }
+    const el = parseLines(JSON.stringify(op === 'edit' ? y : x))[0];
+    if (!el) continue;
+    if (op === 'add') { added.push(el); continue; }
+    if (op === 'edit' && typeof x === 'number' && els[x]) {
+      const old = els[x]!;
+      const grow = footprintSize(el) / footprintSize(old);
+      const growH = old.h > 0 ? el.h / old.h : 1;
+      if (grow > 1.56 || growH > 1.3) {
+        // 키우는 수정: 원래 크기를 유지한 채 새 중심으로만 옮긴다
+        const da = (el.a0 + el.a1) / 2 - (old.a0 + old.a1) / 2, db = (el.b0 + el.b1) / 2 - (old.b0 + old.b1) / 2;
+        els[x] = { ...old, a0: old.a0 + da, a1: old.a1 + da, b0: old.b0 + db, b1: old.b1 + db };
+        blocked++;
+      } else { els[x] = el; edits++; }
+    }
+  }
+  return { kept: els.filter((e): e is El => !!e), added, edits, dels, blocked };
+}
+
+const ANNOTATION = new Set(['route', 'node', 'shaft']);
+
 async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   const sample = (await getSample())!;
   if (!opts.base) throw new Error('원본 이미지가 없어요.');
@@ -213,20 +254,39 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   for (let idx = n - 1; idx >= 0; idx--) {
     const { core, crop } = regions[idx];
     const label = n > 1 ? `구역 ${n - idx}/${n}` : '전체';
-    const mine = refine ? opts.current!.filter((e) => inside(centerOf(e), core, W, H)) : [];
+    const mine = refine ? opts.current!.filter((e) => !ANNOTATION.has(e.kind) && inside(centerOf(e), core, W, H)) : [];
     const gridded = await renderRegion(opts.base, { crop, grid: true, overlaySvg: refine ? opts.overlaySvg : null });
     const images = [await blobOf(gridded)];
     if (twoImages) images.unshift(await blobOf(await renderRegion(opts.base, { crop })));
     const where = `This request covers one horizontal band of a larger drawing: screen pixels x ${Math.round(crop.x)}..${Math.round(crop.x + crop.w)}, y ${Math.round(crop.y)}..${Math.round(crop.y + crop.h)} of the full ${W} x ${H} image. The grid labels are GLOBAL chart coordinates of the full image - use them exactly as printed. Output every element whose main part is visible in this band (other bands are handled separately).`;
     const imgs = twoImages ? 'Image 1 is the band of the original; image 2 is the same band with the isometric grid' : 'The image is the band of the original with the isometric grid drawn over it';
-    const task = refine
-      ? `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, one per line:\n${mine.map(lineOf).join('\n') || '(none)'}\n\nCompare the red lines with the original and output the corrected list for this band: move/resize elements whose red outline does not sit on the original, add anything missing - especially small objects (each chair, plant, monitor, laptop, box, door frame) the original shows but the red drawing lacks - shrink anything drawn bigger than the original, drop anything that does not exist, keep correct elements unchanged.`
-      : `${where}\n${imgs}. Build the scene elements for this band.`;
+    if (refine) {
+      const numbered = mine.map((e, k) => `${k}: ${lineOf(e)}`).join('\n') || '(none)';
+      const task = `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, numbered:\n${numbered}\n\nCompare the red drawing with the original and list only the needed changes:\n- move elements whose red outline does not sit on the original;\n- shrink elements drawn bigger than the original (never make anything bigger unless the original is clearly bigger);\n- add every object the original shows but the red drawing lacks - especially small ones (each chair, plant, monitor, laptop, box, door frame, shelf, cabinet);\n- delete only elements that do not exist in the original, or that are annotation graphics (routes, markers, highlight shafts).`;
+      const prompt = `${SYSTEM}\n\n${DELTA_FORMAT}\n\n${task}`;
+      opts.onProgress?.(`${label} · Claude가 차이를 비교하는 중`);
+      try {
+        const { text } = await sample(prompt, {
+          images, modelTier: 'complex', effort: 'medium', cache: false, signal: opts.signal,
+          onText: ({ text }: { text: string }) => opts.onProgress?.(`${label} · 수정 사항 받는 중 · ${countLines(text)}건`),
+        });
+        const d = applyDelta(mine, text);
+        const added = d.added.filter((e) => !ANNOTATION.has(e.kind) && inside(centerOf(e), core, W, H));
+        out.push(...d.kept, ...added);
+        opts.onProgress?.(`${label} · 수정 ${d.edits} · 추가 ${added.length} · 삭제 ${d.dels}${d.blocked ? ` · 키우기 막음 ${d.blocked}` : ''}`);
+      } catch (e) {
+        const err = e as SampleErr;
+        if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
+        if (!err.code) throw e;
+        out.push(...mine);   // 이 구역 보정이 실패하면 그대로 둔다(전체 작업은 계속)
+        opts.onProgress?.(`${label} · 보정을 건너뜀 (오류 코드: ${err.code})`);
+      }
+      continue;
+    }
+    const task = `${where}\n${imgs}. Build the scene elements for this band.`;
     const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
-    const els = await askWithContinuation(sample, base, images, refine ? 'medium' : 'high', opts, label);
-    const keep = els.filter((e) => inside(centerOf(e), core, W, H));
-    // 보정 결과가 많이 모자라면 이 구역은 이전 것을 유지
-    out.push(...(refine && keep.length < mine.length * 0.6 ? mine : keep));
+    const els = (await askWithContinuation(sample, base, images, 'high', opts, label)).filter((e) => !ANNOTATION.has(e.kind));
+    out.push(...els.filter((e) => inside(centerOf(e), core, W, H)));
   }
   if (!out.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
   return out;

@@ -253,16 +253,23 @@ export function drawElement(p: Pen, e: El) {
   }
 }
 
-export function renderSVG(scene: Scene, opts: { wscale?: number; bg?: string | null; only?: (e: El) => boolean } = {}) {
-  const pen = new Pen();
-  for (const e of scene.elements) if (!opts.only || opts.only(e)) drawElement(pen, e);
-  let body = pen.out.join('\n');
-  const ws = opts.wscale ?? 1.35;
-  if (ws !== 1) body = body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * ws).toFixed(2)}"`);
+/** 가구(세부) 요소: 선 굵기를 따로 조절한다 */
+export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'box']);
+const scaleWidths = (body: string, k: number) => (k === 1 ? body : body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * k).toFixed(2)}"`));
+
+export function renderSVG(scene: Scene, opts: { wscale?: number; wdetail?: number; bg?: string | null; only?: (e: El) => boolean } = {}) {
+  const ws = opts.wscale ?? 1.35, wd = opts.wdetail ?? ws;
+  const parts: string[] = [];
+  for (const e of scene.elements) {
+    if (opts.only && !opts.only(e)) continue;
+    const pen = new Pen();
+    drawElement(pen, e);
+    parts.push(scaleWidths(pen.out.join('\n'), DETAIL_KINDS.has(e.kind) ? wd : ws));
+  }
   const bg = opts.bg === undefined ? '#FFFFFF' : opts.bg;
   const { width: W, height: H } = scene;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">` +
-    (bg ? `<rect width="${W}" height="${H}" fill="${bg}"/>` : '') + body + '</svg>';
+    (bg ? `<rect width="${W}" height="${H}" fill="${bg}"/>` : '') + parts.join('\n') + '</svg>';
 }
 
 /** 요소 하나만 그린 SVG 조각(에디터의 레이어별 렌더용) */
