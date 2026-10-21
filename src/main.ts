@@ -3,6 +3,7 @@ import { renderElement, renderSVG, P, screenDeltaToAB, screenToAB, C, S } from '
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { runAI, describeError, getKey, setKey, aiMode } from './ai';
 import { askConfirm, saveFile } from './platform';
+import { setBusy } from './busy';
 import sampleScene from './sample-scene.json';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -431,6 +432,7 @@ async function ai(refine: boolean) {
   btns.forEach((b) => (b.disabled = true));
   $('btnCancel').hidden = false;
   aiAbort = new AbortController();
+  setBusy(0.05, 0.9);
   const t0 = performance.now();
   try {
     status('이미지를 준비하는 중…', 'busy');
@@ -453,6 +455,7 @@ async function ai(refine: boolean) {
     btns.forEach((b) => (b.disabled = false));
     $('btnCancel').hidden = true;
     aiAbort = null;
+    setBusy(null);
   }
 }
 $('btnDraft').onclick = async () => {

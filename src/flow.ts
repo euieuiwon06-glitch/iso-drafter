@@ -2,6 +2,7 @@
 import { loadIntoEditor, openKeyDialog, showEditorFit } from './main';
 import { runAI, describeError, aiMode, hostedInClaude } from './ai';
 import { saveFile } from './platform';
+import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { renderSVG } from './iso';
@@ -54,6 +55,16 @@ function setSteps(rounds: number) {
 function mark(k: StepKey, state: 'now' | 'done' | 'fail') {
   const li = $('steps').querySelector<HTMLLIElement>(`li[data-k="${k}"]`);
   if (li) li.className = state;
+  const all = [...$('steps').querySelectorAll('li')];
+  const i = all.findIndex((x) => x.dataset.k === k);
+  if (state === 'fail') { setBusy(null); return; }
+  // 각 단계의 무게: 교정 1, AI 단계마다 3, 마무리 0.3
+  const w = all.map((x) => (x.dataset.k === 'rect' ? 1 : x.dataset.k === 'done' ? 0.3 : 3));
+  const total = w.reduce((a, b) => a + b, 0);
+  const start = w.slice(0, i).reduce((a, b) => a + b, 0);
+  if (k === 'done' && state === 'done') setBusy(null);
+  else if (state === 'done') setBusy((start + w[i]) / total);
+  else setBusy((start + w[i] * 0.05) / total, (start + w[i] * 0.92) / total);
 }
 const msg = (t: string) => { $('runMsg').textContent = t; };
 
@@ -164,6 +175,7 @@ async function convert(file: File) {
     ($('btnStop') as HTMLButtonElement).textContent = '처음으로';
   } finally {
     abort = null;
+    setBusy(null);
   }
 }
 
@@ -239,7 +251,7 @@ $('btnResMore').onclick = async () => {
     mark('fix1', 'fail');
     msg((err as Error)?.name === 'AbortError' ? '중단했어요.' : describeError(err));
     ($('btnStop') as HTMLButtonElement).textContent = '돌아가기';
-  } finally { abort = null; }
+  } finally { abort = null; setBusy(null); }
 };
 
 void keyState();
