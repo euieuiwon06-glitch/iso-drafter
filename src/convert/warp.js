@@ -17,19 +17,61 @@ export function detectSegments(cv, gray) {
   return out;
 }
 
-/** 각 선분을 세 축 계열 중 하나로 분류한다. 주변 선분들의 각도 중앙값과 일치하는 것만 남긴다. */
+/**
+ * 각 선분을 세 축 계열(수직 / 오른쪽 아래 A / 오른쪽 위 B)로 분류한다.
+ * 그림마다 실제 축 각도가 다르므로(30° 등각이 아닌 투시·축측 그림) 각도 분포의 봉우리로 축을 찾는다.
+ * 목표 각도는 항상 90°, 30°(A), 150°(B): 교정 후 그림은 정확한 등각이 된다.
+ */
 export function classify(segs) {
-  const fam = (a) => (Math.abs(a - 90) < 16 ? 0 : a > 115 && a < 178 ? 1 : a > 2 && a < 70 ? 2 : -1);
-  const target = [90, 150, 30];
-  const cand = segs.map((s) => ({ ...s, f: fam(s.ang), mx: (s.x1 + s.x2) / 2, my: (s.y1 + s.y2) / 2 })).filter((s) => s.f >= 0);
-  const big = cand.filter((s) => s.len > 60);
+  const cand = segs.filter((s) => s.len >= 30).map((s) => ({ ...s, mx: (s.x1 + s.x2) / 2, my: (s.y1 + s.y2) / 2 }));
+  // 길이 가중 각도 분포(1° 칸, 원형으로 ±3° 평활)
+  const raw = new Float64Array(180), hist = new Float64Array(180);
+  for (const s of cand) raw[Math.round(s.ang) % 180] += s.len;
+  for (let d = 0; d < 180; d++) for (let k = -3; k <= 3; k++) hist[d] += raw[(d + k + 180) % 180] * (4 - Math.abs(k));
+  const peakNear = (lo, hi) => {      // [lo, hi] 범위(도, 원형)에서 가장 높은 봉우리
+    let best = -1, bv = 0;
+    for (let d = lo; d <= hi; d++) { const v = hist[((d % 180) + 180) % 180]; if (v > bv) { bv = v; best = ((d % 180) + 180) % 180; } }
+    return { ang: best, w: bv };
+  };
+  const total = hist.reduce((a, b) => a + b, 0) || 1;
+  const vert = peakNear(84, 96);
+  const down = peakNear(3, 80);       // 오른쪽 아래로 가는 축 → A(30°)
+  const up = peakNear(100, 177);      // 오른쪽 위로 가는 축 → B(150°)
+  const fams = [];
+  if (vert.w > total * 0.01) fams.push({ ref: vert.ang, target: 90 });
+  if (down.w > 0) fams.push({ ref: down.ang, target: 30 });
+  if (up.w > 0) fams.push({ ref: up.ang, target: 150 });
+  if (!fams.length) return [];
+
+  // 1차: 전체 봉우리 중 가장 가까운 계열(±20° 안)
+  for (const s of cand) {
+    let best = null;
+    for (const f of fams) { const d = angDiff(s.ang, f.ref); if (d < 20 && (!best || d < best.d)) best = { d, f }; }
+    s.f = best ? best.f : null;
+  }
+  // 2차: 주변(380px) 같은 계열 선들의 각도 중앙값과 4.5° 안에 드는 것만 남긴다(투시로 각도가 조금씩 바뀌어도 따라감)
+  const big = cand.filter((s) => s.f && s.len > 60);
   const kept = [];
   for (const s of cand) {
-    const near = big.filter((q) => q.f === s.f && Math.hypot(q.mx - s.mx, q.my - s.my) < 380).map((q) => q.ang).sort((a, b) => a - b);
-    const ref = near.length >= 3 ? near[near.length >> 1] : target[s.f];
-    if (angDiff(s.ang, ref) < 4.5) kept.push({ ...s, target: target[s.f] });
+    if (!s.f) continue;
+    let best = null;
+    for (const f of fams) {
+      const near = big.filter((q) => q.f === f && Math.hypot(q.mx - s.mx, q.my - s.my) < 380).map((q) => q.ang);
+      const ref = near.length >= 3 ? circMedian(near) : f.ref;
+      const d = angDiff(s.ang, ref);
+      if (!best || d < best.d) best = { d, f };
+    }
+    if (best.d < 4.5) kept.push({ ...s, target: best.f.target });
   }
+  kept.axes = { vert: fams.find((f) => f.target === 90)?.ref ?? null, down: fams.find((f) => f.target === 30)?.ref ?? null, up: fams.find((f) => f.target === 150)?.ref ?? null };
   return kept;
+}
+
+/** 방향(0~180°) 각도들의 중앙값: 0/180 경계를 넘지 않도록 첫 값 기준으로 펼친다 */
+function circMedian(arr) {
+  const r = arr[0];
+  const v = arr.map((a) => r + ((((a - r) % 180) + 270) % 180 - 90)).sort((x, y) => x - y);
+  return ((v[v.length >> 1] % 180) + 180) % 180;
 }
 
 /** 희소 최소제곱(CGLS)로 메시 꼭짓점 위치를 푼다. */

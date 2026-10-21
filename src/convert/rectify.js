@@ -12,8 +12,20 @@ export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
   const gray = new cv.Mat(); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
   post('직선을 찾는 중…');
-  const kept = classify(detectSegments(cv, gray));
+  let kept = classify(detectSegments(cv, gray));
   gray.delete();
+
+  // 1단계: 그림의 두 수평축을 등각 축(30°, 150°)으로 돌리는 전체 변환. 축 방향 길이를 유지해 비율이 무너지지 않게 한다.
+  const M = axisAffine(kept.axes);
+  if (globalThis.process?.env?.ISO_DEBUG) console.log('axes', kept.axes, 'M', M);
+  if (M) {
+    post('축 방향을 등각으로 맞추는 중…');
+    const warped = warpAffineFit(cv, src, M);
+    src.delete(); src = warped;
+    const g2 = new cv.Mat(); cv.cvtColor(src, g2, cv.COLOR_RGBA2GRAY);
+    kept = classify(detectSegments(cv, g2));
+    g2.delete();
+  }
   const before = kept.map((s) => angDiff(s.ang, s.target)).sort((a, b) => a - b);
 
   let out = src, stats = { lines: kept.length, before: 0, after: 0 };
@@ -43,6 +55,70 @@ export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
   for (let y = 0; y < ch; y++) buf.set(src8.subarray(((oy + y) * W0 + ox) * 4, ((oy + y) * W0 + ox + cw) * 4), y * cw * 4);
   out.delete();
   return { data: buf.buffer, width: cw, height: ch, stats };
+}
+
+/** 축 각도(도)들로 2×2 변환을 만든다. 이미 등각에 가까우면 null. */
+function axisAffine(axes) {
+  if (!axes || axes.down == null || axes.up == null) return null;
+  const rad = (d) => (d * Math.PI) / 180;
+  const uA = [Math.cos(rad(axes.down)), Math.sin(rad(axes.down))];          // 오른쪽 아래
+  const uB = [-Math.cos(rad(axes.up)), -Math.sin(rad(axes.up))];            // 오른쪽 위
+  const c = Math.cos(Math.PI / 6), sn = 0.5;
+  const tA = [c, sn], tB = [c, -sn];
+  // 수직선이 있으면 수직이 수직으로 남도록 두 축의 배율 비를 정한다
+  let kA = 1, kB = 1;
+  const det = uA[0] * uB[1] - uB[0] * uA[1];
+  if (Math.abs(det) < 1e-3) return null;
+  const build = (ka, kb) => {
+    const inv = [[uB[1] / det, -uB[0] / det], [-uA[1] / det, uA[0] / det]];
+    const T = [[ka * tA[0], kb * tB[0]], [ka * tA[1], kb * tB[1]]];
+    return [
+      [T[0][0] * inv[0][0] + T[0][1] * inv[1][0], T[0][0] * inv[0][1] + T[0][1] * inv[1][1]],
+      [T[1][0] * inv[0][0] + T[1][1] * inv[1][0], T[1][0] * inv[0][1] + T[1][1] * inv[1][1]],
+    ];
+  };
+  // 2×2 행렬의 찌그러짐(큰 특이값/작은 특이값)
+  const aniso = (m) => {
+    const a = m[0][0], b = m[0][1], c = m[1][0], d = m[1][1];
+    const s1 = a * a + b * b + c * c + d * d, s2 = Math.abs(a * d - b * c);
+    const q = Math.sqrt(Math.max(0, s1 * s1 / 4 - s2 * s2));
+    return Math.sqrt((s1 / 2 + q) / Math.max(1e-9, s1 / 2 - q));
+  };
+  if (axes.vert == null) {
+    // 수직선이 없으면(평면도에 가까운 그림) 모양이 가장 덜 찌그러지는 축 배율 비를 고른다
+    let best = { r: 1, v: Infinity };
+    for (let r = 0.3; r <= 3.001; r *= 1.02) { const v = aniso(build(1 / Math.sqrt(r), Math.sqrt(r))); if (v < best.v) best = { r, v }; }
+    kA = 1 / Math.sqrt(best.r); kB = Math.sqrt(best.r);
+  }
+  if (axes.vert != null) {
+    const al = (0 * uB[1] - uB[0] * 1) / det, be = (uA[0] * 1 - 0 * uA[1]) / det;   // (0,1) = al·uA + be·uB
+    const r = be !== 0 ? -al / be : 0;                                            // kB/kA (수직 성분이 0이 되는 비)
+    if (r > 0.3 && r < 3) { kA = 1 / Math.sqrt(r); kB = Math.sqrt(r); }
+  }
+  // M = [kA·tA  kB·tB] · [uA uB]^-1
+  const inv = [[uB[1] / det, -uB[0] / det], [-uA[1] / det, uA[0] / det]];
+  const T = [[kA * tA[0], kB * tB[0]], [kA * tA[1], kB * tB[1]]];
+  const M = [
+    [T[0][0] * inv[0][0] + T[0][1] * inv[1][0], T[0][0] * inv[0][1] + T[0][1] * inv[1][1]],
+    [T[1][0] * inv[0][0] + T[1][1] * inv[1][0], T[1][0] * inv[0][1] + T[1][1] * inv[1][1]],
+  ];
+  const off = Math.abs(M[0][0] - 1) + Math.abs(M[0][1]) + Math.abs(M[1][0]) + Math.abs(M[1][1] - 1);
+  return off < 0.06 ? null : M;
+}
+
+/** 2×2 변환을 적용하고, 결과가 화면 안에 들어오도록 옮긴다(긴 변 MAX_SIDE 유지). */
+function warpAffineFit(cv, src, M) {
+  const W = src.cols, H = src.rows;
+  const pts = [[0, 0], [W, 0], [0, H], [W, H]].map(([x, y]) => [M[0][0] * x + M[0][1] * y, M[1][0] * x + M[1][1] * y]);
+  const minX = Math.min(...pts.map((q) => q[0])), maxX = Math.max(...pts.map((q) => q[0]));
+  const minY = Math.min(...pts.map((q) => q[1])), maxY = Math.max(...pts.map((q) => q[1]));
+  const sc = Math.min(1.5, MAX_SIDE / Math.max(maxX - minX, maxY - minY));
+  const OW = Math.round((maxX - minX) * sc), OH = Math.round((maxY - minY) * sc);
+  const A = cv.matFromArray(2, 3, cv.CV_64F, [M[0][0] * sc, M[0][1] * sc, -minX * sc, M[1][0] * sc, M[1][1] * sc, -minY * sc]);
+  const out = new cv.Mat();
+  cv.warpAffine(src, out, A, new cv.Size(OW, OH), cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
+  A.delete();
+  return out;
 }
 
 /** opencv.js 모듈/전역 객체를 사용 가능한 상태로 만든다. */
