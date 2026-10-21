@@ -6,6 +6,7 @@ import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
 import { getSample, inClaude } from './platform';
 import { renderRegion, splitRegions, type Rect } from './grid';
 import { C, S } from './iso';
+import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, type Field } from './fit';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -49,6 +50,7 @@ DRAW ORDER: the renderer paints elements in array order (painter's algorithm). O
 QUALITY - DENSITY AND TRUE SIZE (most important):
 - Match the original's level of detail. Every individual object the image shows becomes its own element: each chair, each monitor, each laptop, each plant, each box on a shelf rack, each cabinet, each door frame, each glass panel run, each rail. Never summarise a group ("a row of desks") as one bigger element, and never skip small objects. A detailed office drawing usually needs 150-400 elements; a band of it 60-200.
 - True size: measure every footprint by reading the grid at the object's actual corners. Do not enlarge objects, do not round sizes up, do not make furniture chunkier than drawn. Small things stay small (chairs ~20-35, monitors ~25-45 wide in typical drawings - but always trust your measurement over these hints). Snap to multiples of 5 only when that changes a size by less than 10%.
+- Respect the room structure: every object sits inside the room it is in, on that room's floor; furniture never crosses or overlaps a wall; walls meet at real corners and follow the original wall lines exactly. Do not invent walls, partitions or objects that are not drawn.
 - Keep spacing: rows of chairs/desks keep the original count and pitch.
 - Use the most specific kind for each object (sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
 - Straighten anything the source drew slightly off-axis.`;
@@ -213,10 +215,10 @@ ELEMENT is [kind, a0, a1, b0, b1, z, h, n, m, dir, color, note, points] as in th
 const footprintSize = (e: El) => Math.max(Math.abs(e.a1 - e.a0), 1) * Math.max(Math.abs(e.b1 - e.b0), 1);
 
 /** 수정분을 현재 요소들에 적용한다. 원래보다 크게 키운 수정은 크기를 무시하고 위치만 옮긴다. */
-function applyDelta(mine: El[], text: string): { kept: El[]; added: El[]; edits: number; dels: number; blocked: number } {
+function applyDelta(mine: El[], text: string, f: Field): { kept: El[]; added: El[]; edits: number; dels: number; blocked: number; rejected: number } {
   const els: (El | null)[] = mine.map((e) => ({ ...e }));
   const added: El[] = [];
-  let edits = 0, dels = 0, blocked = 0;
+  let edits = 0, dels = 0, blocked = 0, rejected = 0;
   for (const raw of text.split('\n')) {
     const line = raw.trim().replace(/,$/, '');
     if (!line.startsWith('[')) continue;
@@ -224,10 +226,13 @@ function applyDelta(mine: El[], text: string): { kept: El[]; added: El[]; edits:
     try { v = JSON.parse(line); } catch { continue; }
     if (!Array.isArray(v)) continue;
     const [op, x, y] = v as [string, unknown, unknown];
-    if (op === 'del' && typeof x === 'number' && els[x]) { els[x] = null; dels++; continue; }
+    if (op === 'del' && typeof x === 'number' && els[x]) {
+      if (acceptDel(els[x]!, f)) { els[x] = null; dels++; } else rejected++;
+      continue;
+    }
     const el = parseLines(JSON.stringify(op === 'edit' ? y : x))[0];
     if (!el) continue;
-    if (op === 'add') { added.push(el); continue; }
+    if (op === 'add') { if (acceptAdd(el, f)) added.push(el); else rejected++; continue; }
     if (op === 'edit' && typeof x === 'number' && els[x]) {
       const old = els[x]!;
       const grow = footprintSize(el) / footprintSize(old);
@@ -235,12 +240,15 @@ function applyDelta(mine: El[], text: string): { kept: El[]; added: El[]; edits:
       if (grow > 1.56 || growH > 1.3) {
         // 키우는 수정: 원래 크기를 유지한 채 새 중심으로만 옮긴다
         const da = (el.a0 + el.a1) / 2 - (old.a0 + old.a1) / 2, db = (el.b0 + el.b1) / 2 - (old.b0 + old.b1) / 2;
-        els[x] = { ...old, a0: old.a0 + da, a1: old.a1 + da, b0: old.b0 + db, b1: old.b1 + db };
+        const moved = { ...old, a0: old.a0 + da, a1: old.a1 + da, b0: old.b0 + db, b1: old.b1 + db };
+        if (acceptEdit(old, moved, f)) els[x] = moved;
         blocked++;
-      } else { els[x] = el; edits++; }
+      } else if (acceptEdit(old, el, f)) { els[x] = el; edits++; } else rejected++;
     }
   }
-  return { kept: els.filter((e): e is El => !!e), added, edits, dels, blocked };
+  // 남은 요소도 원본 선에 붙인다
+  const kept = els.filter((e): e is El => !!e).map((e) => snap(e, f).el);
+  return { kept, added: added.map((e) => snap(e, f).el), edits, dels, blocked, rejected };
 }
 
 const ANNOTATION = new Set(['route', 'node', 'shaft']);
@@ -256,6 +264,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   // 구역 수: 긴 변 약 550px마다 1구역 → 호출 1번이 짧아지고 구역마다 해상도가 높아진다
   const n = Math.max(1, Math.min(5, Math.round(Math.max(W, H) / 550)));
   const regions = splitRegions(W, H, n);
+  const field = edgeField(opts.base);
   const out: El[] = [];
   // 화면 아래(앞·아래층) 구역부터: 합칠 때 아래층이 먼저 그려진다
   for (let idx = n - 1; idx >= 0; idx--) {
@@ -277,10 +286,10 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
           images, modelTier: 'complex', effort: 'medium', cache: false, signal: opts.signal,
           onText: ({ text }: { text: string }) => opts.onProgress?.(`${label} · 수정 사항 받는 중 · ${countLines(text)}건`),
         });
-        const d = applyDelta(mine, text);
+        const d = applyDelta(mine, text, field);
         const added = d.added.filter((e) => !ANNOTATION.has(e.kind) && inside(centerOf(e), core, W, H));
         out.push(...d.kept, ...added);
-        opts.onProgress?.(`${label} · 수정 ${d.edits} · 추가 ${added.length} · 삭제 ${d.dels}${d.blocked ? ` · 키우기 막음 ${d.blocked}` : ''}`);
+        opts.onProgress?.(`${label} · 수정 ${d.edits} · 추가 ${added.length} · 삭제 ${d.dels}${d.blocked ? ` · 키우기 막음 ${d.blocked}` : ''}${d.rejected ? ` · 원본과 안 맞아 거절 ${d.rejected}` : ''}`);
       } catch (e) {
         const err = e as SampleErr;
         if (err.code === 'cancelled') throw new DOMException('중단', 'AbortError');
@@ -293,7 +302,9 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
     const task = `${where}\n${imgs}. Build the scene elements for this band.`;
     const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
     const els = (await askWithContinuation(sample, base, images, 'high', opts, label)).filter((e) => !ANNOTATION.has(e.kind));
-    out.push(...els.filter((e) => inside(centerOf(e), core, W, H)));
+    const fit = fitDraft(els.filter((e) => inside(centerOf(e), core, W, H)), field);
+    out.push(...fit.els);
+    opts.onProgress?.(`${label} · 원본 선에 맞춤 ${fit.moved} · 근거 없어 제외 ${fit.dropped}`);
   }
   if (!out.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
   return out;
