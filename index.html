@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ISO DRAFTER</title>
+  <meta name="description" content="이미지를 깔끔한 등각(아이소메트릭) 도면 SVG로 다시 그리는 에디터" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">ISO<span>DRAFTER</span></div>
+    <div class="group">
+      <label class="btn" title="원본 이미지 열기">이미지 열기<input id="fileImage" type="file" accept="image/*" hidden /></label>
+      <button class="btn" id="btnSample">예시 불러오기</button>
+      <button class="btn" id="btnClear">새 장면</button>
+    </div>
+    <div class="group ai">
+      <button class="btn primary" id="btnDraft">AI 초안</button>
+      <button class="btn" id="btnRefine" title="현재 장면을 원본과 겹쳐 비교해서 다시 맞춥니다">AI 보정</button>
+    </div>
+    <div class="group">
+      <button class="btn icon" id="btnUndo" title="되돌리기 (Ctrl+Z)">↶</button>
+      <button class="btn icon" id="btnRedo" title="다시 하기 (Ctrl+Y)">↷</button>
+    </div>
+    <div class="group sliders">
+      <label>밑그림 <input id="rngUnder" type="range" min="0" max="100" value="35" /></label>
+      <label><input id="chkGrid" type="checkbox" /> 격자</label>
+      <label>선 굵기 <input id="rngStroke" type="range" min="80" max="220" value="135" /></label>
+    </div>
+    <div class="group end">
+      <label class="btn">JSON 열기<input id="fileJson" type="file" accept=".json,application/json" hidden /></label>
+      <button class="btn" id="btnJson">JSON 저장</button>
+      <button class="btn dark" id="btnSvg">SVG 내보내기</button>
+      <button class="btn icon" id="btnKey" title="API 키 설정">⚙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="left">
+      <h3>추가</h3>
+      <div id="addGrid" class="add-grid"></div>
+      <h3>레이어 <small>위 = 먼저 그림(뒤쪽)</small></h3>
+      <ol id="layers" class="layers"></ol>
+    </aside>
+
+    <section class="stage" id="stageWrap">
+      <svg id="stage" xmlns="http://www.w3.org/2000/svg">
+        <rect id="paper" fill="#fff" />
+        <image id="under" preserveAspectRatio="none" />
+        <g id="gridLayer"></g>
+        <g id="sceneLayer"></g>
+        <g id="selLayer"></g>
+      </svg>
+      <div class="hint" id="hint">빈 곳 드래그 = 화면 이동 · 휠 = 확대/축소 · 요소 드래그 = 이동(5 단위 맞춤, Alt = 자유) · Delete = 삭제 · Ctrl+D = 복제</div>
+    </section>
+
+    <aside class="right" id="props">
+      <p class="empty">요소를 선택하면 여기서 수치를 편집할 수 있어요.</p>
+    </aside>
+  </main>
+
+  <footer class="status"><span id="status">준비됨</span><button class="btn small" id="btnCancel" hidden>취소</button></footer>
+
+  <dialog id="dlgKey">
+    <form method="dialog">
+      <h3>Anthropic API 키</h3>
+      <p>AI 초안·보정 기능에만 쓰여요. 키는 <b>이 브라우저에만</b> 저장되고, 요청은 Anthropic API로 바로 전송돼요. 사용 요금은 키 주인의 계정에 청구돼요(초안 1회에 대략 0.3~1달러).</p>
+      <p class="muted">키는 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> → API Keys에서 만들 수 있어요. 공용 컴퓨터에서는 쓰고 나서 지워 주세요.</p>
+      <input id="inpKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <div class="row">
+        <button class="btn" value="clear" id="btnKeyClear">키 지우기</button>
+        <span class="spacer"></span>
+        <button class="btn" value="cancel">닫기</button>
+        <button class="btn primary" value="save" id="btnKeySave">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
