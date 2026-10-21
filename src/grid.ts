@@ -1,5 +1,19 @@
 // 원본 위에 등각 좌표 격자(차트 좌표 라벨 포함)를 그려 AI에게 보낼 이미지를 만든다.
-import { C, S } from './iso';
+import { axes, screenToAB } from './iso';
+
+/** 차트 격자선들(화면 좌표 선분) */
+export function gridLines(W: number, H: number, step: number) {
+  const { uA, uB } = axes();
+  const corners = [[0, 0], [W, 0], [0, H], [W, H]].map(([x, y]) => screenToAB(x, y));
+  const amin = Math.min(...corners.map((c) => c[0])), amax = Math.max(...corners.map((c) => c[0]));
+  const bmin = Math.min(...corners.map((c) => c[1])), bmax = Math.max(...corners.map((c) => c[1]));
+  const lo = Math.floor(Math.min(amin, bmin) / step) * step, hi = Math.ceil(Math.max(amax, bmax) / step) * step;
+  const pt = (a: number, b: number) => [a * uA[0] + b * uB[0], a * uA[1] + b * uB[1]];
+  const A: number[][] = [], B: number[][] = [];
+  for (let v = lo; v <= hi; v += step) { A.push([v, ...pt(v, bmin), ...pt(v, bmax)]); B.push([v, ...pt(amin, v), ...pt(amax, v)]); }
+  return { A, B, amin, amax, bmin, bmax, pt };
+}
+
 
 export function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
@@ -40,22 +54,15 @@ export async function renderRegion(base: HTMLImageElement, opts: { crop?: Rect; 
     try { g.drawImage(await loadImage(url), 0, 0, W, H); } finally { URL.revokeObjectURL(url); }
   }
   if (opts.grid) {
-    const span = W / C + (2 * H) / S;
-    const lo = -Math.ceil(span / step) * step, hi = -lo;
+    const gl = gridLines(W, H, step / 2);
     g.lineWidth = 1 / k;
-    for (let v = lo; v <= hi; v += step / 2) {
-      const major = v % step === 0;
-      // A = v 인 선 (B를 따라 변함) / B = v 인 선
-      g.strokeStyle = major ? 'rgba(220,0,0,.55)' : 'rgba(255,120,120,.35)';
-      g.beginPath(); g.moveTo(C * (v + lo), S * (v - lo)); g.lineTo(C * (v + hi), S * (v - hi)); g.stroke();
-      g.strokeStyle = major ? 'rgba(0,0,220,.55)' : 'rgba(120,120,255,.35)';
-      g.beginPath(); g.moveTo(C * (lo + v), S * (lo - v)); g.lineTo(C * (hi + v), S * (hi - v)); g.stroke();
-    }
+    for (const [v, x0, y0, x1, y1] of gl.A) { g.strokeStyle = v % step === 0 ? 'rgba(220,0,0,.55)' : 'rgba(255,120,120,.35)'; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); }
+    for (const [v, x0, y0, x1, y1] of gl.B) { g.strokeStyle = v % step === 0 ? 'rgba(0,0,220,.55)' : 'rgba(120,120,255,.35)'; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); }
     g.fillStyle = '#7A007A';
     g.font = `${Math.round(12 / k)}px sans-serif`;
-    for (let a = lo; a <= hi; a += step) for (let b = lo; b <= hi; b += step) {
+    for (let a = Math.ceil(gl.amin / step) * step; a <= gl.amax; a += step) for (let b = Math.ceil(gl.bmin / step) * step; b <= gl.bmax; b += step) {
       if ((a / step + b / step) % 2 !== 0) continue;
-      const x = C * (a + b), y = S * (a - b);
+      const [x, y] = gl.pt(a, b);
       if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h) continue;
       g.fillText(`${a},${b}`, x + 2 / k, y - 2 / k);
     }

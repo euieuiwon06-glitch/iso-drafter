@@ -33,7 +33,7 @@ export type El = z.infer<typeof ElementSchema> & { id?: string };
 export const SceneSchema = z.object({
   elements: z.array(ElementSchema),
 });
-export type Scene = { width: number; height: number; elements: El[] };
+export type Scene = { width: number; height: number; elements: El[]; proj?: { a: number; b: number } };
 
 export const KIND_LABEL: Record<Kind, string> = {
   slab: '바닥판', floor: '바닥 면(색)', wall: '벽(불투명)', glass: '유리벽', rail: '난간', door: '문틀', shaft: '샤프트',

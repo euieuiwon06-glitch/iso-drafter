@@ -1,20 +1,43 @@
 // 등각 렌더 엔진. 요소 목록을 그린 순서대로(뒤→앞) SVG 문자열로 만든다.
 import type { El, ColorName, Scene } from './schema';
+const INK = '#2B2B2B';const ROUTE = '#12C060';
 
-export const C = Math.cos(Math.PI / 6);
-export const S = 0.5;
-const INK = '#2B2B2B';
-const ROUTE = '#12C060';
+// 투영: A축(화면 오른쪽 아래)과 B축(오른쪽 위)의 화면 각도. 기본은 30° 등각. 원본 그림의 축 각도를 그대로 쓸 수 있다.
+export type Proj = { a: number; b: number };    // 도: a = A축 각도(0~90, 아래로), b = B축 각도(-90~0, 위로)
+export const ISO: Proj = { a: 30, b: -30 };
+let uA: [number, number] = [Math.cos(Math.PI / 6), 0.5], uB: [number, number] = [Math.cos(Math.PI / 6), -0.5];
+let curProj: Proj = ISO;
+export function setProjection(pr: Proj = ISO) {
+  curProj = pr;
+  uA = [Math.cos((pr.a * Math.PI) / 180), Math.sin((pr.a * Math.PI) / 180)];
+  uB = [Math.cos((pr.b * Math.PI) / 180), Math.sin((pr.b * Math.PI) / 180)];
+}
+export const getProjection = () => curProj;
+/** 축 단위 벡터(화면) */
+export const axes = () => ({ uA, uB });
 
 export const PALETTE: Record<ColorName, string> = {
   white: '#FFFFFF', green: '#17C767', greenStrip: '#43DA8A', greenGlass: '#A9F1C8', gray: '#E6E6E6',
 };
 
 export type V3 = [number, number, number];
-export const P = (a: number, b: number, z = 0): [number, number] => [C * (a + b), S * (a - b) - z];
+export const P = (a: number, b: number, z = 0): [number, number] => [a * uA[0] + b * uB[0], a * uA[1] + b * uB[1] - z];
 /** 화면 이동량 → 차트 이동량 (z 고정) */
-export const screenDeltaToAB = (dx: number, dy: number): [number, number] => [(dx / C + dy / S) / 2, (dx / C - dy / S) / 2];
+export function screenDeltaToAB(dx: number, dy: number): [number, number] {
+  const det = uA[0] * uB[1] - uB[0] * uA[1];
+  return [(dx * uB[1] - uB[0] * dy) / det, (uA[0] * dy - dx * uA[1]) / det];
+}
 export const screenToAB = (x: number, y: number, z = 0): [number, number] => screenDeltaToAB(x, y + z);
+/** 바닥 위 h만큼 높은 점이 차트에서 몇 칸 옮겨 보이는지: (0,-h)를 A,B로 나타낸 값 */
+export const liftShift = (h: number) => screenDeltaToAB(0, -h);
+/** 둥근 물체의 화면 좌우 끝 방향(차트 단위벡터)과 앞쪽 반원의 시작 각 */
+function roundDirs() {
+  const ts = Math.atan2(uB[0], uA[0]);          // 화면 x가 가장 큰 방향
+  const ty = Math.atan2(uB[1], uA[1]);          // 화면 y가 가장 큰(앞쪽) 방향
+  return { k: [Math.cos(ts), Math.sin(ts)] as [number, number], front0: ty - Math.PI / 2 };
+}
+/** 수직 면의 바깥 법선(차트)이 보는 사람 쪽(화면 아래)을 향하면 보인다 */
+const facesViewer = (na: number, nb: number) => na * uA[1] + nb * uB[1] > 1e-9;
 
 const f = (v: number) => (Math.round(v * 10) / 10).toString();
 
@@ -49,11 +72,10 @@ class Pen {
   }
   /** 수직 원기둥(위·아래 반지름 다를 수 있음): 화분, 기둥, 휴지통 */
   cylinder(a: number, b: number, z0: number, h: number, r0: number, r1: number, fill = '#FFFFFF') {
-    // 원(반지름 r)의 화면 좌우 끝은 (a ± r/√2, b ± r/√2) 방향 → 화면 x 범위 ±C·r·√2
-    const k = Math.SQRT1_2;
-    const L = (r: number, z: number): V3 => [a - r * k, b - r * k, z], R = (r: number, z: number): V3 => [a + r * k, b + r * k, z];
+    const { k, front0 } = roundDirs();
+    const L = (r: number, z: number): V3 => [a - r * k[0], b - r * k[1], z], R = (r: number, z: number): V3 => [a + r * k[0], b + r * k[1], z];
     const arc: V3[] = [];
-    for (let i = 0; i <= 20; i++) { const t = Math.PI * 1.25 + (Math.PI * i) / 20; arc.push([a + r0 * Math.cos(t), b + r0 * Math.sin(t), z0]); }
+    for (let i = 0; i <= 20; i++) { const t = front0 + (Math.PI * i) / 20; arc.push([a + r0 * Math.cos(t), b + r0 * Math.sin(t), z0]); }
     this.poly([L(r1, z0 + h), ...arc, R(r1, z0 + h)], '#EFEFEF', INK, 1.6);
     this.ellipse(a, b, z0 + h, r1, fill, 1.6);
   }
@@ -196,7 +218,7 @@ function smoothPrism(p: Pen, ctrl: P2[], z: number, h: number, top: string) {
   let area = 0;
   for (let i = 0; i < pts.length; i++) { const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length]; area += x1 * y2 - x2 * y1; }
   const sgn = area > 0 ? 1 : -1;
-  const vis = pts.map((q, i) => { const r = pts[(i + 1) % pts.length], da = r[0] - q[0], db = r[1] - q[1]; return db * sgn - (-da * sgn) > 1e-9; });
+  const vis = pts.map((q, i) => { const r = pts[(i + 1) % pts.length], da = r[0] - q[0], db = r[1] - q[1]; return facesViewer(db * sgn, -da * sgn); });
   // 옆면(채움만)
   pts.forEach((q, i) => {
     if (!vis[i] || h <= 0) return;
@@ -221,12 +243,12 @@ function smoothPrism(p: Pen, ctrl: P2[], z: number, h: number, top: string) {
 /** 회전체: 단면(반지름, 높이) 목록을 수직축으로 돌린 모양 — 화병, 조명, 병, 둥근 스툴 */
 function lathe(p: Pen, a: number, b: number, z: number, prof: P2[], fill: string) {
   if (prof.length < 2) return;
-  const k = Math.SQRT1_2;
+  const { k, front0 } = roundDirs();
   const prof2 = prof.length >= 3 ? catmull2(prof, false, 6) : prof;
-  const left = prof2.map(([r, zz]) => [a - r * k, b - r * k, z + zz] as V3);
-  const right = prof2.map(([r, zz]) => [a + r * k, b + r * k, z + zz] as V3).reverse();
+  const left = prof2.map(([r, zz]) => [a - r * k[0], b - r * k[1], z + zz] as V3);
+  const right = prof2.map(([r, zz]) => [a + r * k[0], b + r * k[1], z + zz] as V3).reverse();
   // 몸통(채움)
-  const front = (r: number, zz: number) => { const o: V3[] = []; for (let i = 0; i <= 16; i++) { const t = Math.PI * 1.25 + (Math.PI * i) / 16; o.push([a + r * Math.cos(t), b + r * Math.sin(t), z + zz]); } return o; };
+  const front = (r: number, zz: number) => { const o: V3[] = []; for (let i = 0; i <= 16; i++) { const t = front0 + (Math.PI * i) / 16; o.push([a + r * Math.cos(t), b + r * Math.sin(t), z + zz]); } return o; };
   p.poly([...left, ...right], '#F1F1F1', null, 0);
   p.poly([...front(prof2[0][0], prof2[0][1])].reverse().concat(left.slice(0, 1)), '#F1F1F1', null, 0);
   p.line(left, INK, 1.6); p.line(right, INK, 1.6);
@@ -245,7 +267,7 @@ function leaves(p: Pen, a: number, b: number, z: number, h: number, r: number, n
     const reach = r * (0.55 + 0.45 * ((i * 0.618 + seed) % 1));
     const rise = h * (0.45 + 0.55 * ((i * 0.381 + seed * 0.5) % 1));
     return { th, reach, rise };
-  }).sort((u, v) => (Math.cos(u.th) - Math.sin(u.th)) - (Math.cos(v.th) - Math.sin(v.th)));   // 화면 뒤(−A, +B)부터
+  }).sort((u, v) => P(Math.cos(u.th), Math.sin(u.th))[1] - P(Math.cos(v.th), Math.sin(v.th))[1]);   // 화면 뒤(위쪽)부터
   for (const { th, reach, rise } of items) {
     const ca = Math.cos(th), sb = Math.sin(th), pa = -sb, pb = ca, w = reach * 0.34;
     const base: V3 = [a, b, z], tip: V3 = [a + ca * reach, b + sb * reach, z + rise];
@@ -277,7 +299,8 @@ function prism(p: Pen, pts: [number, number][], z: number, h: number, top: strin
   const faces = pts.map((q, i) => {
     const r = pts[(i + 1) % pts.length], da = r[0] - q[0], db = r[1] - q[1];
     const na = db * sgn, nb = -da * sgn;            // 바깥 법선
-    return { q, r, vis: na - nb > 1e-6, depth: (q[0] + r[0]) / 2 - (q[1] + r[1]) / 2, light: -nb > na };
+    const mid = P((q[0] + r[0]) / 2, (q[1] + r[1]) / 2);
+    return { q, r, vis: facesViewer(na, nb), depth: mid[1], light: -nb > na };
   }).filter((f) => f.vis).sort((u, v) => u.depth - v.depth);
   for (const f of faces)
     p.poly([[f.q[0], f.q[1], z], [f.r[0], f.r[1], z], [f.r[0], f.r[1], z + h], [f.q[0], f.q[1], z + h]], f.light ? '#F1F1F1' : '#E4E4E4', INK, 1.8);
@@ -470,6 +493,7 @@ export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'so
 const scaleWidths = (body: string, k: number) => (k === 1 ? body : body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * k).toFixed(2)}"`));
 
 export function renderSVG(scene: Scene, opts: { wscale?: number; wdetail?: number; bg?: string | null; only?: (e: El) => boolean } = {}) {
+  setProjection(scene.proj ?? ISO);
   const ws = opts.wscale ?? 1.35, wd = opts.wdetail ?? ws;
   const parts: string[] = [];
   for (const e of scene.elements) {

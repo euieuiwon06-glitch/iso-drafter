@@ -1,5 +1,6 @@
 import { KINDS, KIND_LABEL, COLORS, DIRS, POINT_KINDS, defaults, newId, type El, type Kind, type Scene } from './schema';
-import { renderElement, renderSVG, P, screenDeltaToAB, screenToAB, C, S } from './iso';
+import { renderElement, renderSVG, P, screenDeltaToAB, screenToAB, setProjection, ISO } from './iso';
+import { gridLines } from './grid';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { runAI, describeError, getKey, setKey, aiMode } from './ai';
 import { askConfirm, saveFile } from './platform';
@@ -65,13 +66,10 @@ function fitView() {
 function renderGrid() {
   gridLayer.innerHTML = '';
   if (!($('chkGrid') as HTMLInputElement).checked) return;
-  const { width: W, height: H } = scene, step = 50;
-  const span = W / C + (2 * H) / S, lo = -Math.ceil(span / 100) * 100, hi = -lo;
-  let d1 = '', d2 = '';
-  for (let v = lo; v <= hi; v += step) {
-    d1 += `M${C * (v + lo)} ${S * (v - lo)}L${C * (v + hi)} ${S * (v - hi)}`;
-    d2 += `M${C * (lo + v)} ${S * (lo - v)}L${C * (hi + v)} ${S * (hi - v)}`;
-  }
+  const { width: W, height: H } = scene;
+  const gl = gridLines(W, H, 50);
+  const d1 = gl.A.map(([, x0, y0, x1, y1]) => `M${x0} ${y0}L${x1} ${y1}`).join('');
+  const d2 = gl.B.map(([, x0, y0, x1, y1]) => `M${x0} ${y0}L${x1} ${y1}`).join('');
   gridLayer.innerHTML = `<path d="${d1}" stroke="#f08080" stroke-width="1" opacity=".45" fill="none"/>` +
     `<path d="${d2}" stroke="#8080f0" stroke-width="1" opacity=".45" fill="none"/>`;
 }
@@ -83,6 +81,7 @@ function renderOne(e: El) {
 }
 
 function fullRender() {
+  setProjection(scene.proj ?? ISO);
   paper.setAttribute('width', String(scene.width)); paper.setAttribute('height', String(scene.height));
   under.setAttribute('width', String(scene.width)); under.setAttribute('height', String(scene.height));
   if (underUrl) under.setAttribute('href', underUrl); else under.removeAttribute('href');
@@ -468,7 +467,7 @@ $('btnCancel').onclick = () => aiAbort?.abort();
 // ---------------------------------------------------------------- 변환 화면과의 연결
 /** 변환 결과(장면 + 교정된 원본)를 에디터에 연다. */
 export async function loadIntoEditor(sc: Scene, url: string | null) {
-  scene = { width: sc.width, height: sc.height, elements: ensureIds(sc.elements) };
+  scene = { width: sc.width, height: sc.height, elements: ensureIds(sc.elements), proj: sc.proj };
   underUrl = url; underImg = url ? await loadImage(url) : null;
   selId = null; undo.length = 0; redo.length = 0; save();
   fullRender(); fitView();

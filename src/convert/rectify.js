@@ -15,17 +15,9 @@ export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
   let kept = classify(detectSegments(cv, gray));
   gray.delete();
 
-  // 1단계: 그림의 두 수평축을 등각 축(30°, 150°)으로 돌리는 전체 변환. 축 방향 길이를 유지해 비율이 무너지지 않게 한다.
-  const M = axisAffine(kept.axes);
-  if (globalThis.process?.env?.ISO_DEBUG) console.log('axes', kept.axes, 'M', M);
-  if (M) {
-    post('축 방향을 등각으로 맞추는 중…');
-    const warped = warpAffineFit(cv, src, M);
-    src.delete(); src = warped;
-    const g2 = new cv.Mat(); cv.cvtColor(src, g2, cv.COLOR_RGBA2GRAY);
-    kept = classify(detectSegments(cv, g2));
-    g2.delete();
-  }
+  // 그림의 축 각도를 그대로 쓴다(30° 등각으로 돌리지 않는다). 투영: A = 오른쪽 아래 축, B = 오른쪽 위 축
+  const ax = kept.axes ?? {};
+  const proj = { a: ax.down ?? 30, b: ax.up != null ? ax.up - 180 : -30 };
   const before = kept.map((s) => angDiff(s.ang, s.target)).sort((a, b) => a - b);
 
   let out = src, stats = { lines: kept.length, before: 0, after: 0 };
@@ -54,7 +46,7 @@ export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
   const buf = new Uint8ClampedArray(cw * ch * 4);
   for (let y = 0; y < ch; y++) buf.set(src8.subarray(((oy + y) * W0 + ox) * 4, ((oy + y) * W0 + ox + cw) * 4), y * cw * 4);
   out.delete();
-  return { data: buf.buffer, width: cw, height: ch, stats };
+  return { data: buf.buffer, width: cw, height: ch, stats, proj };
 }
 
 /** 축 각도(도)들로 2×2 변환을 만든다. 이미 등각에 가까우면 null. */

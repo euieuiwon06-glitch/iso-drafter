@@ -20,7 +20,7 @@ export function detectSegments(cv, gray) {
 /**
  * 각 선분을 세 축 계열(수직 / 오른쪽 아래 A / 오른쪽 위 B)로 분류한다.
  * 그림마다 실제 축 각도가 다르므로(30° 등각이 아닌 투시·축측 그림) 각도 분포의 봉우리로 축을 찾는다.
- * 목표 각도는 항상 90°, 30°(A), 150°(B): 교정 후 그림은 정확한 등각이 된다.
+ * 목표 각도는 그림 자신의 축 각도(수직은 90°): 투시로 모이던 선만 평행하게 펴고, 시점 각도는 바꾸지 않는다.
  */
 export function classify(segs) {
   const cand = segs.filter((s) => s.len >= 30).map((s) => ({ ...s, mx: (s.x1 + s.x2) / 2, my: (s.y1 + s.y2) / 2 }));
@@ -39,8 +39,8 @@ export function classify(segs) {
   const up = peakNear(100, 177);      // 오른쪽 위로 가는 축 → B(150°)
   const fams = [];
   if (vert.w > total * 0.01) fams.push({ ref: vert.ang, target: 90 });
-  if (down.w > 0) fams.push({ ref: down.ang, target: 30 });
-  if (up.w > 0) fams.push({ ref: up.ang, target: 150 });
+  if (down.w > 0) fams.push({ ref: down.ang, target: down.ang, key: 'down' });
+  if (up.w > 0) fams.push({ ref: up.ang, target: up.ang, key: 'up' });
   if (!fams.length) return [];
 
   // 1차: 전체 봉우리 중 가장 가까운 계열(±20° 안)
@@ -48,6 +48,14 @@ export function classify(segs) {
     let best = null;
     for (const f of fams) { const d = angDiff(s.ang, f.ref); if (d < 20 && (!best || d < best.d)) best = { d, f }; }
     s.f = best ? best.f : null;
+  }
+  // 수평 두 축의 목표 각도 = 그 계열 선들의 길이 가중 중앙값(가장 덜 비트는 각도)
+  for (const f of fams) {
+    if (!f.key) continue;
+    const mem = cand.filter((s) => s.f === f).map((s) => [f.ref + ((((s.ang - f.ref) % 180) + 270) % 180 - 90), s.len]).sort((x, y) => x[0] - y[0]);
+    const tot = mem.reduce((t, m) => t + m[1], 0);
+    let acc = 0;
+    for (const [ang, w] of mem) { acc += w; if (acc >= tot / 2) { f.target = Math.round((((ang % 180) + 180) % 180) * 10) / 10; break; } }
   }
   // 2차: 주변(380px) 같은 계열 선들의 각도 중앙값과 4.5° 안에 드는 것만 남긴다(투시로 각도가 조금씩 바뀌어도 따라감)
   const big = cand.filter((s) => s.f && s.len > 60);
@@ -63,7 +71,7 @@ export function classify(segs) {
     }
     if (best.d < 4.5) kept.push({ ...s, target: best.f.target });
   }
-  kept.axes = { vert: fams.find((f) => f.target === 90)?.ref ?? null, down: fams.find((f) => f.target === 30)?.ref ?? null, up: fams.find((f) => f.target === 150)?.ref ?? null };
+  kept.axes = { vert: fams.find((f) => f.target === 90 && !f.key)?.ref ?? null, down: fams.find((f) => f.key === 'down')?.target ?? null, up: fams.find((f) => f.key === 'up')?.target ?? null };
   return kept;
 }
 
@@ -102,6 +110,13 @@ export async function fitMesh(W, H, segs, opts = {}) {
       for (let m = 0; m < 4; m++) { idx.push(2 * i0[m], 2 * i0[m] + 1); val.push(-n[0] * w0[m] * wk, -n[1] * w0[m] * wk); }
       row(Int32Array.from(idx), Float64Array.from(val), 0);
     }
+    // 길이 유지: 선분이 자기 방향으로 원래 길이를 갖도록(평행 조건만 있으면 그림이 납작하게 줄어든다)
+    const dir = [Math.cos(th), Math.sin(th)], sg = Math.sign(dir[0] * (s.x2 - s.x1) + dir[1] * (s.y2 - s.y1)) || 1;
+    const [i1, w1] = bil(s.x2, s.y2), wl = (opts.lengthWeight ?? 1) * Math.sqrt(1 / Math.max(1, s.len / 40));
+    const idx = [], val = [];
+    for (let m = 0; m < 4; m++) { idx.push(2 * i1[m], 2 * i1[m] + 1); val.push(sg * dir[0] * w1[m] * wl, sg * dir[1] * w1[m] * wl); }
+    for (let m = 0; m < 4; m++) { idx.push(2 * i0[m], 2 * i0[m] + 1); val.push(-sg * dir[0] * w0[m] * wl, -sg * dir[1] * w0[m] * wl); }
+    row(Int32Array.from(idx), Float64Array.from(val), s.len * wl);
   }
   const WS = 1;
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {

@@ -5,7 +5,7 @@ import { saveFile } from './platform';
 import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
-import { renderSVG, DETAIL_KINDS, screenBox } from './iso';
+import { renderSVG, DETAIL_KINDS, screenBox, setProjection, ISO, type Proj } from './iso';
 import { traceDetails } from './trace';
 import { newId, type El, type Scene } from './schema';
 
@@ -134,13 +134,13 @@ function rgbaToUrl(data: ArrayBuffer, w: number, h: number) {
   return c2.toDataURL('image/jpeg', 0.92);
 }
 
-async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Stats }> {
+async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Stats; proj: Proj }> {
   if (hostedInClaude()) {
     msg('OpenCV를 불러오는 중… (처음 한 번은 몇 초 걸려요)');
     const cv = await loadCvFromCdn();
     const id = imageRGBA(img);
     const r = await rectifyRGBA(cv, id.data.buffer, id.width, id.height, msg);
-    return { url: rgbaToUrl(r.data, r.width, r.height), stats: r.stats };
+    return { url: rgbaToUrl(r.data, r.width, r.height), stats: r.stats, proj: r.proj };
   }
   return new Promise((resolve, reject) => {
     const id = imageRGBA(img);
@@ -152,7 +152,7 @@ async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Sta
       else if (d.type === 'error') { w.terminate(); reject(new Error(`투시 교정 실패: ${d.message}`)); }
       else if (d.type === 'done') {
         w.terminate();
-        resolve({ url: rgbaToUrl(d.data, d.width, d.height), stats: d.stats });
+        resolve({ url: rgbaToUrl(d.data, d.width, d.height), stats: d.stats, proj: d.proj ?? ISO });
       }
     };
     w.onerror = (e) => { w.terminate(); reject(new Error(`투시 교정 실패: ${e.message}`)); };
@@ -165,7 +165,7 @@ const withIds = (els: El[]) => els.map((e) => ({ ...e, id: newId() }));
 
 async function aiPass(current: El[] | null, label: string): Promise<El[]> {
   const original = await imageToJpeg(rectImg!);
-  const overlay = current ? renderSVG({ width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: current }, { wscale: 2, bg: null }) : null;
+  const overlay = current ? renderSVG({ width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: current, proj: job?.proj ?? result?.proj }, { wscale: 2, bg: null }) : null;
   const { dataUrl: gridded } = await griddedImage(rectImg!, overlay);
   return runAI({
     original, gridded, width: rectImg!.naturalWidth, height: rectImg!.naturalHeight,
@@ -176,7 +176,7 @@ async function aiPass(current: El[] | null, label: string): Promise<El[]> {
 }
 
 // ---------------------------------------------------------------- 작업(단계별 저장 → 실패·새로고침 후 이어서)
-type Job = { rounds: number; rectUrl: string | null; stats: Stats; els: El[] | null; done: StepKey[]; t0: number };
+type Job = { rounds: number; rectUrl: string | null; stats: Stats; els: El[] | null; done: StepKey[]; t0: number; proj?: Proj };
 const JOB_KEY = 'iso-drafter:job';
 let job: Job | null = null;
 const saveJob = () => { try { localStorage.setItem(JOB_KEY, JSON.stringify(job)); } catch { /* 용량 초과 등: 이어하기만 안 됨 */ } };
@@ -205,6 +205,7 @@ async function runJob(srcUrl?: string) {
   ($('btnStop') as HTMLButtonElement).textContent = '중단';
   show('run');
   startTicker();
+  setProjection(job.proj ?? ISO);
   if (job.rectUrl) { rectUrl = job.rectUrl; rectImg = await loadImage(job.rectUrl); }
   ($('runImg') as HTMLImageElement).src = job.els ? '' : (job.rectUrl ?? srcUrl ?? '');
   if (job.els) showPreview(job.els);
@@ -215,8 +216,8 @@ async function runJob(srcUrl?: string) {
       step = k; mark(k, 'now');
       if (k === 'rect') {
         if (!srcUrl) throw new Error('원본 이미지가 없어요. 이미지를 다시 올려 주세요.');
-        const { url, stats } = await rectify(await loadImage(srcUrl));
-        job.rectUrl = url; job.stats = stats;
+        const { url, stats, proj } = await rectify(await loadImage(srcUrl));
+        job.rectUrl = url; job.stats = stats; job.proj = proj; setProjection(proj);
         rectUrl = url; rectImg = await loadImage(url);
         ($('runImg') as HTMLImageElement).src = url;
       } else if (k === 'draft') {
@@ -259,14 +260,14 @@ $('btnResume').onclick = () => void runJob();
 /** 진행 중에도 지금까지의 재작도를 미리 보여 준다. */
 function showPreview(els: El[]) {
   if (!rectImg) return;
-  const svg = renderSVG({ width: rectImg.naturalWidth, height: rectImg.naturalHeight, elements: els }, { wscale: resW, wdetail: resD });
+  const svg = renderSVG({ width: rectImg.naturalWidth, height: rectImg.naturalHeight, elements: els, proj: job?.proj }, { wscale: resW, wdetail: resD });
   if (svgUrl) URL.revokeObjectURL(svgUrl);
   svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   ($('runImg') as HTMLImageElement).src = svgUrl;
 }
 
 function finish(els: El[], stats: Stats, secs: number) {
-  result = { width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: withIds(els) };
+  result = { width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: withIds(els), proj: job?.proj ?? result?.proj };
   void renderResult();
   $('resStats').textContent =
     `요소 ${els.length}개 · ${secs}초` +

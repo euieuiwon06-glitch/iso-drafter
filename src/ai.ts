@@ -5,17 +5,16 @@ import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
 import { getSample, inClaude } from './platform';
 import { renderRegion, splitRegions, type Rect } from './grid';
-import { C, S } from './iso';
+import { P, getProjection, liftShift } from './iso';
 import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, type Field } from './fit';
 
 const MODEL = 'claude-opus-5-5';
 
-const SYSTEM = `You convert an image of an isometric architectural / interior drawing into a scene description for an isometric line-drawing renderer. The renderer redraws the scene as a clean technical illustration: exact isometric axes, uniform ink lines, flat fills, green circulation route.
+const SYSTEM_T = `You convert an image of an isometric architectural / interior drawing into a scene description for an isometric line-drawing renderer. The renderer redraws the scene as a clean technical illustration: exact isometric axes, uniform ink lines, flat fills, green circulation route.
 
 COORDINATES
 - The second image is the original with an isometric grid. Red lines are constant-A lines, blue lines are constant-B lines, every 50 units; purple labels "A,B" mark grid crossings every 100 units. Read every position off this grid.
-- Screen mapping: X = 0.866*(A+B), Y = 0.5*(A-B) - z. +A runs down-right on screen, +B runs up-right, z is up. The viewer looks from the +A / -B side, so the visible vertical faces of a box are its B0 face (lower-left) and its A1 face (lower-right).
-- A point h units above grid point (A,B) appears on the grid at (A-h, B+h). Use this to find the ground position of tall things from their tops.
+{{PROJ}}
 - Chart-frame convention (important, keeps multi-level buildings simple): give every floor the A,B coordinates its top surface visibly occupies on the grid and z = 0. Everything standing on that floor (walls, furniture, routes, nodes) also uses z = 0 and the coordinates read at its foot on that floor. Do not try to model true storey heights. Use z > 0 only for an item raised relative to the floor it visually stands on (e.g. a monitor on a desk: z = desk height).
 
 ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short description)
@@ -60,6 +59,16 @@ QUALITY - DENSITY AND TRUE SIZE (most important):
 - Use the most specific kind for each object (sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
 - Straighten anything the source drew slightly off-axis.`;
 
+/** 현재 투영에 맞춘 좌표 설명을 넣은 지시문 */
+function systemPrompt() {
+  const pr = getProjection(), [la, lb] = liftShift(1);
+  const r = (v: number) => Math.round(v * 1000) / 1000;
+  const ca = Math.cos((pr.a * Math.PI) / 180), sa = Math.sin((pr.a * Math.PI) / 180), cb = Math.cos((pr.b * Math.PI) / 180), sb = Math.sin((pr.b * Math.PI) / 180);
+  const proj = `- Screen mapping: X = ${r(ca)}*A + ${r(cb)}*B, Y = ${r(sa)}*A + ${r(sb)}*B - z. +A runs down-right on screen (${Math.round(pr.a)} deg below horizontal), +B runs up-right (${Math.round(-pr.b)} deg above horizontal), z is up. The viewer looks from the +A / -B side, so the visible vertical faces of a box are its B0 face (lower-left) and its A1 face (lower-right).
+- A point h units above grid point (A,B) appears on the grid at (A ${la >= 0 ? '+' : '-'} ${r(Math.abs(la))}*h, B ${lb >= 0 ? '+' : '-'} ${r(Math.abs(lb))}*h). Use this to find the ground position of tall things from their tops.`;
+  return SYSTEM_T.replace('{{PROJ}}', proj);
+}
+
 export function getKey() { try { return localStorage.getItem('iso-drafter:key') ?? ''; } catch { return ''; } }
 export function setKey(k: string) { try { localStorage.setItem('iso-drafter:key', k); } catch { /* 저장 불가 환경 */ } }
 
@@ -92,7 +101,7 @@ export async function runAI(opts: {
     output_config: { effort: refine ? 'high' : 'xhigh', format: betaZodOutputFormat(SceneSchema) },
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default',
-    system: SYSTEM,
+    system: systemPrompt(),
     messages: [{
       role: 'user',
       content: [
@@ -168,10 +177,10 @@ function centerOf(e: El): [number, number] {
   if (e.points.length) {
     const n = e.points.length;
     const a = e.points.reduce((t, q) => t + q.a, 0) / n, b = e.points.reduce((t, q) => t + q.b, 0) / n, z = e.points.reduce((t, q) => t + q.z, 0) / n;
-    return [C * (a + b), S * (a - b) - z];
+    return P(a, b, z);
   }
   const a = (e.a0 + e.a1) / 2, b = (e.b0 + e.b1) / 2, z = e.z + (e.kind === 'slab' ? 0 : e.h / 2);
-  return [C * (a + b), S * (a - b) - z];
+  return P(a, b, z);
 }
 const inside = ([x, y]: [number, number], r: Rect, W: number, H: number) => {
   const cx = Math.min(W - 1, Math.max(0, x)), cy = Math.min(H - 1, Math.max(0, y));   // 화면 밖 요소는 가장 가까운 구역으로
@@ -284,7 +293,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
     if (refine) {
       const numbered = mine.map((e, k) => `${k}: ${lineOf(e)}`).join('\n') || '(none)';
       const task = `${where}\n${imgs}, and the CURRENT scene drawn in red.\nCurrent elements in this band, numbered:\n${numbered}\n\nCompare the red drawing with the original and list only the needed changes:\n- move elements whose red outline does not sit on the original;\n- shrink elements drawn bigger than the original (never make anything bigger unless the original is clearly bigger);\n- add every object the original shows but the red drawing lacks - especially small ones (each chair, plant, monitor, laptop, box, door frame, shelf, cabinet);\n- delete only elements that do not exist in the original, or that are annotation graphics (routes, markers, highlight shafts).`;
-      const prompt = `${SYSTEM}\n\n${DELTA_FORMAT}\n\n${task}`;
+      const prompt = `${systemPrompt()}\n\n${DELTA_FORMAT}\n\n${task}`;
       opts.onProgress?.(`${label} · Claude가 차이를 비교하는 중`);
       try {
         const { text } = await sample(prompt, {
@@ -305,7 +314,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
       continue;
     }
     const task = `${where}\n${imgs}. Build the scene elements for this band.`;
-    const base = `${SYSTEM}\n\n${LINE_FORMAT}\n\n${task}`;
+    const base = `${systemPrompt()}\n\n${LINE_FORMAT}\n\n${task}`;
     const els = (await askWithContinuation(sample, base, images, 'high', opts, label)).filter((e) => !ANNOTATION.has(e.kind));
     const fit = fitDraft(els.filter((e) => inside(centerOf(e), core, W, H)), field);
     out.push(...fit.els);

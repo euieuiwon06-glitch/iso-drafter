@@ -6,5 +6,5 @@ globalThis.ImageData ??= class { constructor(d, w, h) { this.data = d; this.widt
 const cv = await readyCv(require('@techstark/opencv-js'));
 const png = PNG.sync.read(fs.readFileSync(process.argv[2]));
 const r = await rectifyRGBA(cv, png.data.buffer.slice(png.data.byteOffset, png.data.byteOffset + png.data.length), png.width, png.height, (m) => console.log(' ', m));
-console.log(r.width, r.height, r.stats);
+console.log(r.width, r.height, r.stats, r.proj);
 const o = new PNG({ width: r.width, height: r.height }); o.data = Buffer.from(r.data); fs.writeFileSync(process.argv[3], PNG.sync.write(o));
