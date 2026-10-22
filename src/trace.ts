@@ -152,7 +152,8 @@ function splitCorners(pts: Pt[]): Pt[][] {
   return out;
 }
 const AXES = [90, 30, 150];
-const f1 = (v: number) => (Math.round(v * 10) / 10).toString();
+let OUT = 1;      // 평면 그래픽: 기준 좌표 → 원래 크기
+const f1 = (v: number) => (Math.round(v * OUT * 10) / 10).toString();
 
 function toPath(piece: Pt[]): string {
   const sm = rdp(smooth(piece, 2), 0.8);
@@ -523,8 +524,9 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   onStage?.('대표 색을 뽑는 중…');
   await yieldUI();
   const W0 = img.naturalWidth, H0 = img.naturalHeight;
-  const k = Math.max(1, Math.min(2, Math.sqrt(4e6 / (W0 * H0))));      // 작은 그림은 키워서 가는 선을 살린다
-  const w = Math.round(W0 * k), h = Math.round(H0 * k);
+  // 그림 크기와 상관없이 같은 기준으로 따도록 긴 변 1000px(기준 좌표)로 맞추고, 그 2배 해상도에서 작업한다. 출력은 원래 크기로 되돌린다
+  const U = 1000 / Math.max(W0, H0), k = 2;
+  const w = Math.round(W0 * U * k), h = Math.round(H0 * U * k);
   const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
   const g = cv.getContext('2d', { willReadFrequently: true })!;
   g.imageSmoothingQuality = 'high';
@@ -645,7 +647,7 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   }
   const hex = (c: number[]) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
   const bg = hex(C[bgI]);
-  type Pass = { fill: string; shapes: string[]; polys: Pt[][]; lines: SLine[] };
+  type Pass = { fill: string; shapes: Pt[][]; polys: Pt[][]; lines: SLine[] };
   const pass: Pass[] = [];
   const samples: [number, number][] = [];               // 곧은 변·선의 [각도, 길이] → 그림의 축 판단
   const sm = new Float32Array(N), tf = new Float32Array(N);
@@ -675,8 +677,8 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
     for (let x = 0; x < w; x++) { tf[x] = 0; tf[(h - 1) * w + x] = 0; }
     for (let y = 0; y < h; y++) { tf[y * w] = 0; tf[y * w + w - 1] = 0; }
     const loops = contours(tf, w, h, 0.5).filter((l) => area(l) >= 6 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
-    const shapes: string[] = [], free: Pt[][] = [];
-    for (const l of loops) { const s = fitShape(l); if (s) shapes.push(s); else free.push(l); }
+    const shapes: Pt[][] = [], free: Pt[][] = [];
+    for (const l of loops) { if (fitShape(l)) shapes.push(l); else free.push(l); }
     const polys = free.map((l) => loopPoly(smoothClosed(l, 2), 0.5)).filter((q) => q.length >= 3);
     for (const q of polys) for (let i = 0; i < q.length; i++) {
       const a = q[i], b = q[(i + 1) % q.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -691,14 +693,17 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   const axes = detectAxes(samples);
   setTraceAxisList(axes, 4.5);
   const layers: FlatLayer[] = [];
+  OUT = 1 / U;
+  try {
   for (const P of pass) {
     const edges = P.polys.map((q) => polyEdges(q, 6));
     alignEdges(edges.flat(), 1.2);
-    const parts = [...P.shapes, ...P.polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i]))];
+    const parts = [...P.shapes.map((l) => fitShape(l)!), ...P.polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i]))];
     const strokes = strokePaths(P.lines);
     if (parts.length || strokes.length) layers.push({ fill: P.fill, d: parts.join(''), strokes });
   }
-  return { w: W0, h: H0, bg, layers, axes };
+  } finally { OUT = 1; }
+  return { w: W0, h: H0, bg, layers, axes: axes.map((a) => a) };
 }
 
 const angOf = (a: Pt, b: Pt) => ((((Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI) % 180) + 180) % 180;
@@ -754,7 +759,7 @@ export function flatSvg(r: FlatResult) {
 }
 
 // ---------------------------------------------------------------- 도형 맞춤
-const n1 = (v: number) => (Math.round(v * 10) / 10).toString();
+const n1 = (v: number) => (Math.round(v * OUT * 10) / 10).toString();
 /** 윤곽이 원·타원·사각형·둥근 사각형에 가까우면 그 정확한 도형의 패스, 아니면 null */
 function fitShape(l: Pt[]): string | null {
   if (l.length < 8) return null;
@@ -905,9 +910,30 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
   const keep = merged.filter((m) => {
     const L = plen(m.c), wk = m.width * k;
     if (m.closed) return L > 3 * k;
+    // 같은 색 면 가장자리를 따라 붙은 선(면을 따다 남은 테)은 버린다
+    let nb = 0, ns = 0;
+    for (let i = 0; i < m.c.length; i += 3) { ns++; if (nearThick(m.c[i], Math.ceil(wk / 2) + 2)) nb++; }
+    if (nb > ns * 0.5) return false;
     if (L < 2.5 * wk && (nearThick(m.c[0], Math.ceil(wk) + 2) || nearThick(m.c[m.c.length - 1], Math.ceil(wk) + 2))) return false;
     return !(L < 1.2 * wk && m.width < 1.2);
   });
+  // 긴 선 바로 옆에 겹쳐 붙은 짧은 조각(교차부 혹·이중선)은 버린다
+  {
+    const GS2 = 6, lg = new Map<number, Pt[]>();
+    const lens = keep.map((m) => plen(m.c));
+    keep.forEach((m, i) => { if (lens[i] >= 8 * m.width * k) for (const p of m.c) { const key = Math.floor(p[0] / GS2) * 100000 + Math.floor(p[1] / GS2); (lg.get(key) ?? lg.set(key, []).get(key)!).push(p); } });
+    const near = (p: Pt, r: number) => {
+      for (let gx = Math.floor((p[0] - r) / GS2); gx <= Math.floor((p[0] + r) / GS2); gx++) for (let gy = Math.floor((p[1] - r) / GS2); gy <= Math.floor((p[1] + r) / GS2); gy++)
+        for (const q of lg.get(gx * 100000 + gy) ?? []) if (Math.abs(q[0] - p[0]) <= r && Math.abs(q[1] - p[1]) <= r) return true;
+      return false;
+    };
+    for (let i = keep.length - 1; i >= 0; i--) {
+      const m = keep[i];
+      if (m.closed || lens[i] >= 8 * m.width * k) continue;
+      let hit = 0; for (const p of m.c) if (near(p, Math.max(2, m.width * k))) hit++;
+      if (hit >= m.c.length * 0.6) keep.splice(i, 1);
+    }
+  }
   // 굵기 통일: 비슷한 굵기(1.3배 안)끼리 묶어 길이 가중 중앙값 하나로, 아주 적게 쓰인 굵기는 가까운 굵기로
   const groups: { lo: number; hi: number; items: { m: typeof keep[number]; L: number }[] }[] = [];
   for (const m of keep.map((m) => ({ m, L: plen(m.c) })).sort((a, b) => a.m.width - b.m.width)) {
@@ -920,16 +946,15 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
     for (const q of g.items) { acc += q.L; if (acc >= s / 2) return { v: q.m.width, s }; }
     return { v: g.lo, s };
   });
-  groups.forEach((g, i) => {
-    let v = val[i].v;
-    if (val[i].s < tot * 0.08) {
-      let bj = -1, br = 1.8;
-      val.forEach((o, j) => { if (j !== i && o.s >= tot * 0.08) { const r = Math.max(o.v, v) / Math.min(o.v, v); if (r < br) { br = r; bj = j; } } });
-      if (bj >= 0) v = val[bj].v;
-    }
+  // 많이 쓰인 굵기부터 기준으로 삼고, 1.6배 안쪽 굵기는 모두 그 굵기로(확실히 다른 굵기만 따로 남긴다)
+  const kept: number[] = [];
+  for (const i of val.map((_, i) => i).sort((a, b) => val[b].s - val[a].s)) {
+    let v = val[i].v, bj = -1, br = val[i].s < tot * 0.08 ? 2.2 : 1.6;
+    kept.forEach((u, j) => { const r = Math.max(u, v) / Math.min(u, v); if (r < br) { br = r; bj = j; } });
+    if (bj >= 0) v = kept[bj]; else kept.push(v);
     v = Math.max(0.5, Math.round(v * 4) / 4);
-    for (const q of g.items) q.m.width = v;
-  });
+    for (const q of groups[i].items) q.m.width = v;
+  }
   // 자유로운 끝: 앞쪽(또는 아주 가까이)에 다른 선·면이 있으면 그 점까지 늘인다
   const grid = new Map<number, Pt[]>(), GS = 8;
   for (const m of keep) for (const p of m.c) { const key = Math.floor(p[0] / GS) * 100000 + Math.floor(p[1] / GS); (grid.get(key) ?? grid.set(key, []).get(key)!).push(p); }
@@ -1067,7 +1092,7 @@ function strokePaths(lines: SLine[]): { width: number; d: string }[] {
     if (ln.closed) d += 'Z';
     (byWidth.get(ln.width) ?? byWidth.set(ln.width, []).get(ln.width)!).push(d);
   }
-  return [...byWidth].map(([width, ds]) => ({ width, d: ds.join('') }));
+  return [...byWidth].map(([width, ds]) => ({ width: Math.round(width * OUT * 100) / 100, d: ds.join('') }));
 }
 function lineX(a: Pt, b: Pt, c: Pt, d: Pt): Pt | null {
   const r = [b[0] - a[0], b[1] - a[1]], s2 = [d[0] - c[0], d[1] - c[1]], den = r[0] * s2[1] - r[1] * s2[0];
