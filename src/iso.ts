@@ -102,7 +102,18 @@ function chair(p: Pen, a: number, b: number, z0: number, face: string, w = 26, s
     face === '+b' ? [a - hw, a + hw, b - hw, b - hw + t] :
     face === '-b' ? [a - hw, a + hw, b + hw - t, b + hw] :
     face === '+a' ? [a - hw, a - hw + t, b - hw, b + hw] : [a + hw - t, a + hw, b - hw, b + hw];
-  p.box(...bb, z0 + seat, back, col, '#EDEDED', '#DFDFDF', INK, 1.6);
+  // 등받이: 위 가로대 + 세로 살 2개(살 사이는 비어 보이게)
+  const [ba0, ba1, bb0, bb1] = bb, rail = Math.max(5, back * 0.28);
+  p.box(ba0, ba1, bb0, bb1, z0 + seat + back - rail, rail, col, '#EDEDED', '#DFDFDF', INK, 1.6);
+  const alongA = face === '+b' || face === '-b';
+  for (const t of [0.12, 0.88]) {
+    const pa = alongA ? ba0 + (ba1 - ba0) * t : (ba0 + ba1) / 2, pb = alongA ? (bb0 + bb1) / 2 : bb0 + (bb1 - bb0) * t;
+    p.line([[pa, pb, z0 + seat], [pa, pb, z0 + seat + back - rail]], INK, 1.6);
+  }
+  if (col === '#FFFFFF') {   // 좌판 쿠션선
+    const ins = hw * 0.25;
+    p.poly([[a - hw + ins, b - hw + ins, z0 + seat], [a + hw - ins, b - hw + ins, z0 + seat], [a + hw - ins, b + hw - ins, z0 + seat], [a - hw + ins, b + hw - ins, z0 + seat]], 'none', '#9A9A9A', 0.9);
+  }
 }
 
 function table(p: Pen, a0: number, a1: number, b0: number, b1: number, z0: number, h: number, top = 7, leg = 5, inset = 12) {
@@ -258,6 +269,40 @@ function lathe(p: Pen, a: number, b: number, z: number, prof: P2[], fill: string
   const [rt, zt] = prof[prof.length - 1];
   if (rt > 1) p.ellipse(a, b, z + zt, rt, fill, 1.6);
 }
+
+// ---------------------------------------------------------------- 수납·가전 세부
+type Rect4 = [number, number, number, number];
+const norm = (e: El): Rect4 => [Math.min(e.a0, e.a1), Math.max(e.a0, e.a1), Math.min(e.b0, e.b1), Math.max(e.b0, e.b1)];
+/** 보이는 앞면: dir이 −b/+b면 B0 면, +a/−a면 A1 면(뒤쪽 면은 보이지 않으므로 앞쪽으로 바꿔 그린다) */
+function frontFace(r: Rect4, dir: string) {
+  const [a0, a1, b0, b1] = r;
+  return dir === '+a' || dir === '-a'
+    ? { at: (t: number, z: number): V3 => [a1, b0 + (b1 - b0) * t, z], len: b1 - b0 }
+    : { at: (t: number, z: number): V3 => [a0 + (a1 - a0) * t, b0, z], len: a1 - a0 };
+}
+/** 앞면을 문 n개(세로)·서랍 m단(가로)으로 나누고 손잡이를 단다 */
+function doorsAndDrawers(p: Pen, r: Rect4, dir: string, z0: number, h: number, n: number, m: number, plinth = 6) {
+  const f = frontFace(r, dir), zb = z0 + plinth, zt = z0 + h - 2;
+  if (plinth > 0) p.line([f.at(0, zb), f.at(1, zb)], INK, 1.1);
+  const dh = m > 0 ? Math.min((zt - zb) * 0.45, 22 * m) : 0;      // 위쪽 서랍 구역 높이
+  for (let j = 1; j <= m; j++) { const z = zt - (dh * j) / m; p.line([f.at(0, z), f.at(1, z)], INK, 1.1); }
+  for (let j = 0; j < m; j++) { const z = zt - (dh * (j + 0.5)) / m; p.line([f.at(0.42, z), f.at(0.58, z)], INK, 1.8); }
+  const doorTop = zt - dh;
+  if (n > 0 && doorTop - zb > 12) {
+    for (let i = 1; i < n; i++) p.line([f.at(i / n, zb), f.at(i / n, doorTop)], INK, 1.1);
+    for (let i = 0; i < n; i++) {
+      const t = (i + (i % 2 ? 0.12 : 0.88)) / n, zc = Math.min(doorTop - 8, zb + (doorTop - zb) * 0.62);
+      p.line([f.at(t, zc - Math.min(14, (doorTop - zb) * 0.18)), f.at(t, zc)], INK, 1.8);
+    }
+  }
+}
+/** 둥근 모서리 사각형 조절점(곡선 입체용) */
+const roundedRect = (a0: number, a1: number, b0: number, b1: number, r: number): [number, number][] => {
+  r = Math.min(r, (a1 - a0) / 2.2, (b1 - b0) / 2.2);
+  return [[a0 + r, b0], [a1 - r, b0], [a1, b0 + r], [a1, b1 - r], [a1 - r, b1], [a0 + r, b1], [a0, b1 - r], [a0, b0 + r]];
+};
+const ellipseCtrl = (a: number, b: number, ra: number, rb: number, n = 8): [number, number][] =>
+  Array.from({ length: n }, (_, i) => [a + ra * Math.cos((2 * Math.PI * i) / n), b + rb * Math.sin((2 * Math.PI * i) / n)]);
 
 // ---------------------------------------------------------------- 세부 도형 도우미
 /** 잎: 줄기 끝에서 사방으로 뻗는 뾰족한 잎 n장(뒤쪽부터 그림) */
@@ -429,6 +474,21 @@ export function drawElement(p: Pen, e: El) {
       p.line([[a0, b0, zt - 6], [a1, b0, zt - 6]], INK, 1.1);
       p.line([[a1, b0, zt - 6], [a1, b1, zt - 6]], INK, 1.1);
       const n = Math.max(0, Math.round(e.n)), alongA = a1 - a0 >= b1 - b0;
+      // 보이는 긴 면에 수납장 문(약 45 단위마다)과 손잡이, 위 서랍 한 단
+      const fdir = alongA ? '-b' : '+a', flen = alongA ? a1 - a0 : b1 - b0;
+      if (h > 50) doorsAndDrawers(p, [a0, a1, b0, b1], fdir, e.z, h - 6, Math.max(1, Math.round(flen / 45)), 1, 8);
+      // 화구 m개(상판 한쪽 끝)
+      const m = Math.max(0, Math.round(e.m));
+      if (m > 0) {
+        const cols = Math.min(2, m), rows = Math.ceil(m / cols), cell = Math.min(a1 - a0, b1 - b0) * 0.42;
+        const ea = alongA ? a1 - cell * cols * 0.6 : (a0 + a1) / 2, eb = alongA ? (b0 + b1) / 2 : b0 + cell * rows * 0.6;
+        p.poly([[ea - cell, eb - cell, zt + 0.5], [ea + cell * 0.2, eb - cell, zt + 0.5], [ea + cell * 0.2, eb + cell, zt + 0.5], [ea - cell, eb + cell, zt + 0.5]], '#3A3A3A', INK, 1.2);
+        for (let i = 0; i < m; i++) {
+          const ca = ea - cell * 0.4 + (i % cols) * cell * 0.5 - cell * 0.15, cb = eb - cell * 0.5 + Math.floor(i / cols) * cell;
+          p.ellipse(ca, cb, zt + 0.8, cell * 0.17, '#3A3A3A', 1.1);
+          p.ellipse(ca, cb, zt + 0.9, cell * 0.08, '#7A7A7A', 0.8);
+        }
+      }
       for (let i = 0; i < n; i++) {
         const t = (i + 0.5) / n, sw = Math.min(a1 - a0, b1 - b0) * 0.5, sl = sw * 1.3;
         const ca = alongA ? a0 + (a1 - a0) * t : (a0 + a1) / 2, cb = alongA ? (b0 + b1) / 2 : b0 + (b1 - b0) * t;
@@ -437,6 +497,92 @@ export function drawElement(p: Pen, e: El) {
         const fa = alongA ? ca : ca - ha - 4, fb = alongA ? cb + hb + 4 : cb;
         p.line([[fa, fb, zt], [fa, fb, zt + 18], [alongA ? fa : fa + 8, alongA ? fb - 8 : fb, zt + 18]], INK, 1.6);
       }
+      break;
+    }
+    case 'cabinet': {
+      // 수납장: 옷장·협탁·TV장·주방장·서랍장. n = 문 개수, m = 서랍 단수, dir = 앞면
+      const r = norm(e), h = e.h || 80;
+      p.box(r[0], r[1], r[2], r[3], e.z, h, e.color === 'white' ? '#FFFFFF' : PALETTE[e.color], '#F2F2F2', '#E4E4E4', INK, 1.8);
+      doorsAndDrawers(p, r, e.dir, e.z, h, Math.max(0, Math.round(e.n)), Math.max(0, Math.round(e.m)), e.z < 5 ? 6 : 0);
+      break;
+    }
+    case 'bed': {
+      // 침대: dir = 머리(헤드보드) 쪽. 받침 + 매트리스 + 이불(접힌 선) + 베개 + 헤드보드
+      const [a0, a1, b0, b1] = norm(e), z0 = e.z, base = 22, mat = 20, hb = Math.max(e.h || 0, 95);
+      const W = ['#FFFFFF', '#F1F1F1', '#E4E4E4'] as const;
+      const head = e.dir, alongA = head === '+a' || head === '-a', L = alongA ? a1 - a0 : b1 - b0, Wd = alongA ? b1 - b0 : a1 - a0;
+      const t = 7;
+      const headBox: Rect4 = head === '-a' ? [a0, a0 + t, b0, b1] : head === '+a' ? [a1 - t, a1, b0, b1] : head === '-b' ? [a0, a1, b0, b0 + t] : [a0, a1, b1 - t, b1];
+      const headBehind = head === '-a' || head === '+b';      // 뒤쪽(먼저 그려야 하는) 머리
+      if (headBehind) p.box(...headBox, z0, hb, ...W, INK, 1.8);
+      const [ma0, ma1, mb0, mb1] = head === '-a' ? [a0 + t, a1, b0, b1] : head === '+a' ? [a0, a1 - t, b0, b1] : head === '-b' ? [a0, a1, b0 + t, b1] : [a0, a1, b0, b1 - t];
+      p.box(ma0 + 2, ma1 - 2, mb0 + 2, mb1 - 2, z0, base, '#EDEDED', '#E2E2E2', '#D6D6D6', INK, 1.6);
+      p.box(ma0, ma1, mb0, mb1, z0 + base, mat, ...W, INK, 1.8);
+      const zt = z0 + base + mat;
+      // 이불: 발치에서 길이의 62%를 덮고 위쪽으로 접힌 띠
+      const cover = 0.62, fold = 0.1;
+      const span = (f0: number, f1: number): Rect4 => {
+        if (head === '-a') return [ma1 - (ma1 - ma0) * f1, ma1 - (ma1 - ma0) * f0, mb0 - 2, mb1 + 2];
+        if (head === '+a') return [ma0 + (ma1 - ma0) * f0, ma0 + (ma1 - ma0) * f1, mb0 - 2, mb1 + 2];
+        if (head === '-b') return [ma0 - 2, ma1 + 2, mb1 - (mb1 - mb0) * f1, mb1 - (mb1 - mb0) * f0];
+        return [ma0 - 2, ma1 + 2, mb0 + (mb1 - mb0) * f0, mb0 + (mb1 - mb0) * f1];
+      };
+      const dv = span(0, cover);
+      p.box(dv[0], dv[1], dv[2], dv[3], zt - mat * 0.6, mat * 0.6 + 4, '#FFFFFF', '#F4F4F4', '#E8E8E8', INK, 1.6);
+      const fd = span(cover - fold, cover);
+      p.box(fd[0], fd[1], fd[2], fd[3], zt + 4, 2.5, '#F7F7F7', '#EFEFEF', '#E5E5E5', INK, 1.2);
+      // 베개 두 개(넓으면) 또는 하나
+      const np = Wd > 120 ? 2 : 1, pl = Math.min(L * 0.16, 34), pw = Wd / np - 10;
+      for (let i = 0; i < np; i++) {
+        const c = (i + 0.5) / np;
+        let r: Rect4;
+        if (head === '-a') r = [ma0 + 4, ma0 + 4 + pl, mb0 + (mb1 - mb0) * c - pw / 2, mb0 + (mb1 - mb0) * c + pw / 2];
+        else if (head === '+a') r = [ma1 - 4 - pl, ma1 - 4, mb0 + (mb1 - mb0) * c - pw / 2, mb0 + (mb1 - mb0) * c + pw / 2];
+        else if (head === '-b') r = [ma0 + (ma1 - ma0) * c - pw / 2, ma0 + (ma1 - ma0) * c + pw / 2, mb0 + 4, mb0 + 4 + pl];
+        else r = [ma0 + (ma1 - ma0) * c - pw / 2, ma0 + (ma1 - ma0) * c + pw / 2, mb1 - 4 - pl, mb1 - 4];
+        smoothPrism(p, roundedRect(r[0], r[1], r[2], r[3], 6), zt, 9, '#FFFFFF');
+      }
+      if (!headBehind) p.box(...headBox, z0, hb, ...W, INK, 1.8);
+      break;
+    }
+    case 'toilet': {
+      // 변기: dir = 물탱크 쪽(벽 쪽)
+      const [a0, a1, b0, b1] = norm(e), z0 = e.z, d = e.dir, alongA = d === '+a' || d === '-a';
+      const tankD = (alongA ? a1 - a0 : b1 - b0) * 0.28;
+      const tank: Rect4 = d === '-a' ? [a0, a0 + tankD, b0, b1] : d === '+a' ? [a1 - tankD, a1, b0, b1] : d === '-b' ? [a0, a1, b0, b0 + tankD] : [a0, a1, b1 - tankD, b1];
+      const bowl: Rect4 = d === '-a' ? [a0 + tankD, a1, b0 + 3, b1 - 3] : d === '+a' ? [a0, a1 - tankD, b0 + 3, b1 - 3] : d === '-b' ? [a0 + 3, a1 - 3, b0 + tankD, b1] : [a0 + 3, a1 - 3, b0, b1 - tankD];
+      const tankBehind = d === '-a' || d === '+b';
+      const drawTank = () => { p.box(...tank, z0, 78, '#FFFFFF', '#F2F2F2', '#E4E4E4', INK, 1.8); p.box(tank[0] - 1, tank[1] + 1, tank[2] - 1, tank[3] + 1, z0 + 78, 3, '#FFFFFF', '#F2F2F2', '#E4E4E4', INK, 1.4); };
+      if (tankBehind) drawTank();
+      const ca = (bowl[0] + bowl[1]) / 2, cb = (bowl[2] + bowl[3]) / 2, ra = (bowl[1] - bowl[0]) / 2, rb = (bowl[3] - bowl[2]) / 2;
+      smoothPrism(p, ellipseCtrl(ca, cb, ra * 0.7, rb * 0.7), z0, 30, '#FFFFFF');
+      smoothPrism(p, ellipseCtrl(ca, cb, ra, rb), z0 + 30, 8, '#FFFFFF');
+      p.ellipse(ca, cb, z0 + 38.5, Math.min(ra, rb) * 0.62, '#EFEFEF', 1.1, Math.max(ra, rb) * 0.62 * (ra > rb ? 1 : 1));
+      if (!tankBehind) drawTank();
+      break;
+    }
+    case 'bathtub': {
+      // 욕조: 바깥 상자 + 안쪽 둥근 테두리 + 수전(dir 쪽 끝)
+      const [a0, a1, b0, b1] = norm(e), h = e.h || 55, zt = e.z + h, rim = Math.min(a1 - a0, b1 - b0) * 0.12;
+      p.box(a0, a1, b0, b1, e.z, h, '#FFFFFF', '#F1F1F1', '#E4E4E4', INK, 1.8);
+      p.poly(catmull2(roundedRect(a0 + rim, a1 - rim, b0 + rim, b1 - rim, rim * 2), true, 8).map(([a, b]) => [a, b, zt] as V3), '#EEF1F1', INK, 1.4);
+      const d = e.dir, fa = d === '-a' ? a0 + rim * 0.5 : d === '+a' ? a1 - rim * 0.5 : (a0 + a1) / 2, fb = d === '-b' ? b0 + rim * 0.5 : d === '+b' ? b1 - rim * 0.5 : (b0 + b1) / 2;
+      const ia = d === '-a' ? 1 : d === '+a' ? -1 : 0, ib = d === '-b' ? 1 : d === '+b' ? -1 : 0;
+      p.line(catmull3([[fa, fb, zt], [fa, fb, zt + 22], [fa + ia * 10, fb + ib * 10, zt + 24], [fa + ia * 14, fb + ib * 14, zt + 16]]), INK, 2.2);
+      break;
+    }
+    case 'window': {
+      // 벽에 낸 창: (a0,b0)→(a1,b1) 벽 방향, z = 창 아래 높이, h = 창 높이, n = 세로 창살 수
+      const { a0, b0, a1, b1, z } = e, h = e.h || 120;
+      const P3 = (t: number, zz: number): V3 => [a0 + (a1 - a0) * t, b0 + (b1 - b0) * t, zz];
+      p.poly([P3(0, z), P3(1, z), P3(1, z + h), P3(0, z + h)], '#F2F6F6', INK, 2.0);
+      const ins = 0.04, dz = 5;
+      p.poly([P3(ins, z + dz), P3(1 - ins, z + dz), P3(1 - ins, z + h - dz), P3(ins, z + h - dz)], 'none', INK, 1.2);
+      const n = Math.max(1, Math.round(e.n || 2));
+      for (let i = 1; i < n; i++) p.line([P3(i / n, z + dz), P3(i / n, z + h - dz)], INK, 1.4);
+      p.line([P3(ins, z + h * 0.72), P3(1 - ins, z + h * 0.72)], INK, 1.1);
+      // 창턱
+      p.line([P3(-0.02, z - 2), P3(1.02, z - 2)], INK, 2.4);
       break;
     }
     case 'box': p.box(e.a0, e.a1, e.b0, e.b1, e.z, e.h || 30, e.color === 'white' ? '#FFFFFF' : PALETTE[e.color], '#F0F0F0', '#E2E2E2', INK, 1.8); break;
@@ -452,6 +598,16 @@ export function drawElement(p: Pen, e: El) {
         else { const b = b0 + ((b1 - b0) * i) / n; p.line([[a0 + t, b, zt], [a1, b, zt]], INK, 1.1); p.line([[a1, b, zt], [a1, b, zt - 22]], INK, 1.1); }
       }
       backAndArms(p, e.dir, a0, a1, b0, b1, zt, t, 32, 14);
+      // 등쿠션 분할선(등받이 앞면)과 등쪽 쿠션 두 개
+      for (let i = 1; i < n; i++) {
+        if (alongA) { const a = a0 + ((a1 - a0) * i) / n; p.line([[a, b1 - t, zt], [a, b1 - t, zt + 30]], INK, 1.1); }
+        else { const b = b0 + ((b1 - b0) * i) / n; p.line([[a0 + t, b, zt], [a0 + t, b, zt + 30]], INK, 1.1); }
+      }
+      for (const end of [0, 1]) {
+        const ps = 22;
+        if (alongA) { const ca = end ? a1 - t - ps * 0.8 : a0 + t + ps * 0.8; p.box(ca - ps / 2, ca + ps / 2, b1 - t - 7, b1 - t, zt, 20, '#FFFFFF', '#F3F3F3', '#E6E6E6', INK, 1.3); }
+        else { const cb = end ? b1 - t - ps * 0.8 : b0 + t + ps * 0.8; p.box(a0 + t, a0 + t + 7, cb - ps / 2, cb + ps / 2, zt, 20, '#FFFFFF', '#F3F3F3', '#E6E6E6', INK, 1.3); }
+      }
       break;
     }
     case 'roundTable': {
@@ -489,7 +645,7 @@ export function drawElement(p: Pen, e: El) {
 }
 
 /** 가구(세부) 요소: 선 굵기를 따로 조절한다 */
-export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'prism', 'lines', 'panel', 'counter', 'curve', 'lathe']);
+export const DETAIL_KINDS = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'prism', 'lines', 'panel', 'counter', 'curve', 'lathe', 'cabinet', 'bed', 'toilet', 'bathtub', 'window']);
 const scaleWidths = (body: string, k: number) => (k === 1 ? body : body.replace(/stroke-width="([0-9.]+)"/g, (_, v) => `stroke-width="${(parseFloat(v) * k).toFixed(2)}"`));
 
 export function renderSVG(scene: Scene, opts: { wscale?: number; wdetail?: number; bg?: string | null; only?: (e: El) => boolean } = {}) {

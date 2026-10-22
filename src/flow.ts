@@ -279,7 +279,7 @@ let resW = 1.35;          // 구조선 굵기 배율(다운로드에도 적용)
 let resD = 1.0;           // 가구선 굵기 배율
 let cmpX = 50;            // 비교 슬라이더 위치(%)
 
-let detailMode: 'vector' | 'shapes' = 'vector';
+let detailMode: 'vector' | 'shapes' = 'shapes';
 let renderSeq = 0;
 
 /** 결과 SVG: 구조는 도형, 가구·제품은 (선택에 따라) 원본에서 딴 곡선 패스 */

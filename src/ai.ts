@@ -43,6 +43,12 @@ ELEMENTS (fill every field; unused numbers = 0, unused points = [], note = short
 - lathe: round turned object - vase, flower pot, lamp, bottle, cup, bowl, round stool, pedestal, toilet bowl, washbasin. a0,b0 = centre on the floor plan, z = base height, points = profile from bottom to top as [radius, 0, height above base].
 - floor with m = 1: smooth curved outline (round or organic rugs).
 - lines: extra ink detail drawn on surfaces - cabinet door and drawer seams, panel divisions, handles, mullions, desk privacy screens, keyboard outlines. points = 3D polyline. Use liberally to reach the original's level of detail.
+- cabinet: wardrobe, closet, nightstand, dresser, TV unit, sideboard, kitchen base or wall cabinet, fridge, washing machine. Footprint and height as measured; dir = side with the doors (-b or +a when visible); n = number of doors, m = number of drawer rows.
+- bed: footprint of the whole bed; dir = headboard side; h = headboard height.
+- toilet: footprint as measured; dir = tank (wall) side.
+- bathtub: footprint and rim height as measured; dir = faucet end.
+- window: window in a wall, from (a0,b0) to (a1,b1) along the wall, z = sill height, h = window height, n = number of vertical panes.
+- counter: also use m = number of cooktop burners when it has a stove.
 - box: any small box-like object - crate, carton on a shelf, cabinet, counter, appliance, printer, locker, planter box, robot body. Footprint and height as measured; color white unless clearly green.
 - stairs: footprint a0..a1 x b0..b1, total drop h (the floor it descends from is h above the base), n steps, dir = descending direction. Base coordinates are those of the lower floor.
 
@@ -56,7 +62,7 @@ QUALITY - DENSITY AND TRUE SIZE (most important):
 - Respect the room structure: every object sits inside the room it is in, on that room's floor; furniture never crosses or overlaps a wall; walls meet at real corners and follow the original wall lines exactly. Do not invent walls, partitions or objects that are not drawn.
 - Keep spacing: rows of chairs/desks keep the original count and pitch.
 - Curves: wherever the original is curved (round tables, rugs, pots, vases, lamps, armchairs, rounded furniture, sanitary ware), use lathe / prism n=1 / curve / round floor - never approximate a curved object with boxes.
-- Use the most specific kind for each object (sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
+- Use the most specific kind for each object (bed, cabinet, toilet, bathtub, window, sofa, armchair, roundTable for round or oval tables, planter, counter, panel...). Build composite objects from several elements (a desk = table + monitors + task chairs + lines for the privacy screen; a kitchen = counter + box cabinets + lines for doors). Reach for box only when nothing more specific fits.
 - Straighten anything the source drew slightly off-axis.`;
 
 /** 현재 투영에 맞춘 좌표 설명을 넣은 지시문 */

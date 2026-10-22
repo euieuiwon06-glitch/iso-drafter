@@ -53,8 +53,8 @@ export function edgeField(img: HTMLImageElement): Field {
 }
 
 type V3 = [number, number, number];
-const BOXY = new Set(['wall', 'table', 'shelf', 'box', 'counter', 'sofa', 'armchair', 'planter', 'slab']);
-const FLAT = new Set(['glass', 'rail', 'door', 'panel']);
+const BOXY = new Set(['wall', 'table', 'shelf', 'box', 'counter', 'sofa', 'armchair', 'planter', 'slab', 'cabinet', 'bed', 'bathtub']);
+const FLAT = new Set(['glass', 'rail', 'door', 'panel', 'window']);
 
 /** 요소의 주요 윤곽(3D 선분들). 맞춤 대상이 아니면 null */
 function outline(e: El): [V3, V3][] | null {
@@ -147,8 +147,8 @@ export const acceptAdd = (e: El, f: Field) => { const s = support(e, f); return 
 export const acceptDel = (e: El, f: Field) => { const s = support(e, f); return s === null || s < 0.3; };
 
 // ---------------------------------------------------------------- 공간 규칙
-const SUPPORTS = new Set(['table', 'counter', 'shelf', 'box', 'planter', 'roundTable', 'sofa', 'armchair']);
-const FURNITURE = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'counter', 'prism', 'lathe']);
+const SUPPORTS = new Set(['table', 'counter', 'shelf', 'box', 'planter', 'roundTable', 'sofa', 'armchair', 'cabinet', 'bed']);
+const FURNITURE = new Set(['table', 'chair', 'taskChair', 'stool', 'sofa', 'armchair', 'roundTable', 'shelf', 'monitor', 'laptop', 'plant', 'planter', 'box', 'counter', 'prism', 'lathe', 'cabinet', 'bed', 'toilet', 'bathtub']);
 const ON_TOP_ONLY = new Set(['monitor', 'laptop']);
 /** 종류별 상식적인 최대 크기(발자국 한 변, 높이) */
 const MAX: Record<string, [number, number]> = {
@@ -172,7 +172,7 @@ function inPoly([a, b]: [number, number], pts: { a: number; b: number }[]) {
   }
   return c;
 }
-const topOf = (s: El) => s.z + (s.h || ({ table: 74, counter: 90, roundTable: 72, sofa: 40, armchair: 32, box: 30, planter: 40, shelf: 200 } as Record<string, number>)[s.kind] || 0);
+const topOf = (s: El) => s.z + (s.kind === 'bed' ? 42 : s.h || ({ table: 74, counter: 90, roundTable: 72, sofa: 40, armchair: 32, box: 30, planter: 40, shelf: 200, cabinet: 80 } as Record<string, number>)[s.kind] || 0);
 const moveEl = (e: El, da: number, db: number): El => ({ ...e, a0: e.a0 + da, a1: e.a1 + da, b0: e.b0 + db, b1: e.b1 + db, points: e.kind === 'lathe' ? e.points : e.points.map((q) => ({ ...q, a: q.a + da, b: q.b + db })) });
 
 export function groundScene(input: El[]) {
