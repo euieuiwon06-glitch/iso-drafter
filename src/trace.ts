@@ -303,18 +303,86 @@ function contours(s: Float32Array, w: number, h: number, iso = 0.5): Pt[][] {
 
 const area = (p: Pt[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q[0] * r[1] - r[0] * q[1]; } return Math.abs(a) / 2; };
 
-/** 닫힌 윤곽 → 매끈한 패스(모서리는 각지게) */
-function loopPath(loop: Pt[]): string {
-  // 닫힌 윤곽을 120점 조각으로 나눠 단순화(긴 윤곽에서도 빠르게)
-  const p: Pt[] = [];
-  for (let i = 0; i < loop.length; i += 120) {
-    const piece = loop.slice(i, i + 121);
-    if (i + 121 > loop.length) piece.push(loop[0]);
-    p.push(...rdp(piece, 0.35).slice(0, -1));
+// ---------------------------------------------------------------- 직선 교정(도면 기준)
+// 윤곽을 다각형으로 줄인 뒤, 길게 곧은 변은 그림의 축(수직·A축·B축·수평)에 맞춰 펴고,
+// 같은 축·같은 줄 위의 변들은 한 줄로 정렬한 다음, 이웃한 곧은 변의 교점으로 모서리를 다시 만든다.
+type Edge = { i: number; j: number; ux: number; uy: number; mx: number; my: number; len: number; axis: number; straight: boolean };
+
+let AXIS_DIRS: Pt[] = [];
+/** 투영 축(화면 각도, 도)으로 교정 축을 정한다: 수직 + A축 + B축 + 수평 */
+export function setTraceAxes(aDeg: number, bDeg: number) {
+  const d = (t: number): Pt => [Math.cos((t * Math.PI) / 180), Math.sin((t * Math.PI) / 180)];
+  AXIS_DIRS = [d(90), d(aDeg), d(bDeg), d(0)];
+}
+setTraceAxes(30, -30);
+
+const SNAP = Math.sin((7 * Math.PI) / 180);
+
+function polyEdges(p: Pt[], minLen: number): Edge[] {
+  const n = p.length, E: Edge[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = p[i], b = p[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1e-9;
+    let ux = dx / L, uy = dy / L, axis = -1;
+    if (L >= minLen) {
+      let best = SNAP;
+      AXIS_DIRS.forEach((u, k) => { const c = Math.abs(ux * u[1] - uy * u[0]); if (c < best) { best = c; axis = k; } });
+      if (axis >= 0) { const u = AXIS_DIRS[axis], sg = Math.sign(ux * u[0] + uy * u[1]) || 1; ux = u[0] * sg; uy = u[1] * sg; }
+    }
+    E.push({ i, j: (i + 1) % n, ux, uy, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2, len: L, axis, straight: axis >= 0 });
   }
+  return E;
+}
+
+/** 모든 윤곽의 축 변을 모아, 같은 축이고 옆으로 tol 안에 있는 변들을 한 줄(길이 가중 평균)로 맞춘다 */
+function alignEdges(all: Edge[], tol: number) {
+  for (let k = 0; k < AXIS_DIRS.length; k++) {
+    const u = AXIS_DIRS[k], nx = -u[1], ny = u[0];
+    const es = all.filter((e) => e.axis === k).map((e) => ({ e, off: e.mx * nx + e.my * ny, t: e.mx * u[0] + e.my * u[1] })).sort((a, b) => a.off - b.off);
+    let cl: typeof es = [];
+    const flush = () => {
+      if (cl.length > 1) {
+        let sw = 0, so = 0; for (const c of cl) { sw += c.e.len; so += c.off * c.e.len; }
+        const tgt = so / sw;
+        for (const c of cl) { const d = tgt - c.off; c.e.mx += nx * d; c.e.my += ny * d; }
+      }
+      cl = [];
+    };
+    for (const c of es) { if (cl.length && c.off - cl[0].off > tol) flush(); cl.push(c); }
+    flush();
+  }
+}
+
+function intersect(a: Edge, b: Edge): Pt | null {
+  const den = a.ux * b.uy - a.uy * b.ux;
+  if (Math.abs(den) < 1e-6) return null;
+  const t = ((b.mx - a.mx) * b.uy - (b.my - a.my) * b.ux) / den;
+  return [a.mx + a.ux * t, a.my + a.uy * t];
+}
+const proj = (e: Edge, p: Pt): Pt => { const t = (p[0] - e.mx) * e.ux + (p[1] - e.my) * e.uy; return [e.mx + e.ux * t, e.my + e.uy * t]; };
+
+/** 교정된 변으로 다각형 꼭짓점을 다시 만든다 */
+function rebuild(p: Pt[], E: Edge[], maxMove: number): Pt[] {
+  const n = p.length, out: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const ePrev = E[(i - 1 + n) % n], eNext = E[i], v = p[i];
+    let q: Pt = v;
+    if (ePrev.straight && eNext.straight) {
+      const X = ePrev.axis !== eNext.axis ? intersect(ePrev, eNext) : null;
+      q = X && Math.hypot(X[0] - v[0], X[1] - v[1]) < maxMove ? X : (() => { const a = proj(ePrev, v), b = proj(eNext, v); return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as Pt; })();
+    } else if (ePrev.straight) q = proj(ePrev, v);
+    else if (eNext.straight) q = proj(eNext, v);
+    if (Math.hypot(q[0] - v[0], q[1] - v[1]) > maxMove) q = v;
+    out.push(q);
+  }
+  return out;
+}
+
+/** 교정된 다각형 → 패스. 곧은 변은 직선, 나머지 짧은 변 묶음은 매끈한 곡선 */
+function polyPath(p: Pt[], E: Edge[]): string {
   const n = p.length;
   if (n < 3) return '';
   const corner = p.map((q, i) => {
+    if (E[(i - 1 + n) % n].straight || E[i].straight) return true;
     const a = p[(i - 1 + n) % n], b = p[(i + 1) % n];
     const u = sub(q, a), v = sub(b, q), c = (u[0] * v[0] + u[1] * v[1]) / ((Math.hypot(u[0], u[1]) * Math.hypot(v[0], v[1])) || 1);
     return c < Math.cos((55 * Math.PI) / 180);
@@ -322,11 +390,32 @@ function loopPath(loop: Pt[]): string {
   let d = `M${f1(p[0][0])} ${f1(p[0][1])}`;
   for (let i = 0; i < n; i++) {
     const p1 = p[i], p2 = p[(i + 1) % n];
-    if (corner[i] || corner[(i + 1) % n]) { d += `L${f1(p2[0])} ${f1(p2[1])}`; continue; }
+    if (E[i].straight || corner[i] || corner[(i + 1) % n]) { d += `L${f1(p2[0])} ${f1(p2[1])}`; continue; }
     const p0 = p[(i - 1 + n) % n], p3 = p[(i + 2) % n];
     d += `C${f1(p1[0] + (p2[0] - p0[0]) / 6)} ${f1(p1[1] + (p2[1] - p0[1]) / 6)} ${f1(p2[0] - (p3[0] - p1[0]) / 6)} ${f1(p2[1] - (p3[1] - p1[1]) / 6)} ${f1(p2[0])} ${f1(p2[1])}`;
   }
   return d + 'Z';
+}
+
+/** 닫힌 윤곽 → 다각형(빠른 단순화) */
+function loopPoly(loop: Pt[], eps: number): Pt[] {
+  const p: Pt[] = [];
+  for (let i = 0; i < loop.length; i += 120) {
+    const piece = loop.slice(i, i + 121);
+    if (i + 121 > loop.length) piece.push(loop[0]);
+    p.push(...rdp(piece, eps).slice(0, -1));
+  }
+  // 거의 일직선으로 이어지는 꼭짓점은 지운다(긴 변이 쪼개져 있으면 교정이 안 되므로)
+  let q = p, changed = true;
+  while (changed && q.length > 3) {
+    changed = false;
+    for (let i = 0; i < q.length; i++) {
+      const a = q[(i - 1 + q.length) % q.length], b = q[i], c = q[(i + 1) % q.length];
+      const ac = sub(c, a), L = Math.hypot(ac[0], ac[1]) || 1e-9;
+      if (Math.abs(ac[0] * (b[1] - a[1]) - ac[1] * (b[0] - a[0])) / L < eps * 1.6) { q = q.filter((_, k) => k !== i); changed = true; break; }
+    }
+  }
+  return q;
 }
 
 const vecCache = new Map<string, string>();
@@ -357,8 +446,12 @@ export async function vectorizeInk(img: HTMLImageElement, structureSvg: string |
   }
   onStage?.('윤곽을 곡선으로 따는 중…');
   await yieldUI();
-  const loops = contours(s, w, h, 0.42).filter((l) => area(l) >= 2 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
-  const d = loops.map(loopPath).join('');
+  const loops = contours(s, w, h, 0.42).filter((l) => area(l) >= 6 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));   // 6px² 미만 부스러기는 버림
+  // 직선 교정: 다각형 → 축에 맞춘 변 → 같은 줄 정렬 → 교점으로 모서리
+  const polys = loops.map((l) => loopPoly(l, 0.6)).filter((q) => q.length >= 3);
+  const edges = polys.map((q) => polyEdges(q, 5));
+  alignEdges(edges.flat(), 1.2);
+  const d = polys.map((q, i) => polyPath(rebuild(q, edges[i], 4), edges[i])).join('');
   vecCache.set(key, d);
   return d;
 }

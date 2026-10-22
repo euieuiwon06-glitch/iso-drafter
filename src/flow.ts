@@ -5,8 +5,8 @@ import { saveFile } from './platform';
 import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
-import { renderSVG, DETAIL_KINDS, setProjection, ISO, type Proj } from './iso';
-import { vectorizeInk } from './trace';
+import { renderSVG, DETAIL_KINDS, setProjection, getProjection, ISO, type Proj } from './iso';
+import { vectorizeInk, setTraceAxes } from './trace';
 import { newId, type El, type Scene } from './schema';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -289,7 +289,8 @@ async function resultSvg(): Promise<string> {
   const structure = { ...result, elements: result.elements.filter((e) => !DETAIL_KINDS.has(e.kind)) };
   const structSvg = renderSVG(structure, { wscale: resW });
   const key = `${rectUrl?.length}:${resW}:${structure.elements.length}:${JSON.stringify(structure.elements.map((e) => [e.a0, e.b0, e.a1, e.b1, e.z, e.h]))}`;
-  const d = await vectorizeInk(rectImg, structSvg, null, key, (t) => ($('traceState').textContent = t));
+  { const pr = getProjection(); setTraceAxes(pr.a, pr.b); }
+  const d = await vectorizeInk(rectImg, structSvg, null, key + ':ax' + JSON.stringify(getProjection()), (t) => ($('traceState').textContent = t));
   // 원본 선은 채운 도형: 굵게 할 때만 같은 색 테두리를 더한다
   const extra = Math.max(0, (resD - 1) * 1.6).toFixed(2);
   const group = `<g id="details"><path fill="#2B2B2B" fill-rule="evenodd" stroke="#2B2B2B" stroke-width="${extra}" stroke-linejoin="round" d="${d}"/></g>`;
