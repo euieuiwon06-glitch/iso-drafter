@@ -242,3 +242,108 @@ export function inkCover(e: El, f: Field): number {
   }
   return n ? hit / n : 1;
 }
+
+// ---------------------------------------------------------------- 구조 정리(건축 도면 규칙)
+// 같은 선 위 벽·유리·창·문은 한 줄로, 벽 끝은 만나는 벽에 붙여 모서리를 닫고, 높이는 통일,
+// 바닥판 가장자리는 벽선에, 벽 가까운 큰 가구는 벽에 밀착.
+type Lin = { e: El; axis: 'a' | 'b'; off: number; lo: number; hi: number; t: number; box: boolean };
+const LINEAR = new Set(['wall', 'glass', 'rail', 'door', 'window', 'panel']);
+const HUG = new Set(['cabinet', 'shelf', 'counter', 'bed', 'sofa', 'toilet', 'bathtub', 'planter']);
+
+export function regularizeStructure(input: El[]) {
+  const els = input.map((e) => ({ ...e, points: e.points.map((q) => ({ ...q })) }));
+  const lins: Lin[] = [];
+  for (const e of els) {
+    if (!LINEAR.has(e.kind)) continue;
+    if (e.kind === 'wall') {
+      const a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1);
+      if (a1 - a0 >= b1 - b0) lins.push({ e, axis: 'a', off: (b0 + b1) / 2, lo: a0, hi: a1, t: Math.max(4, b1 - b0), box: true });
+      else lins.push({ e, axis: 'b', off: (a0 + a1) / 2, lo: b0, hi: b1, t: Math.max(4, a1 - a0), box: true });
+    } else {
+      const alongA = Math.abs(e.a1 - e.a0) >= Math.abs(e.b1 - e.b0);
+      if (alongA) lins.push({ e, axis: 'a', off: (e.b0 + e.b1) / 2, lo: Math.min(e.a0, e.a1), hi: Math.max(e.a0, e.a1), t: 0, box: false });
+      else lins.push({ e, axis: 'b', off: (e.a0 + e.a1) / 2, lo: Math.min(e.b0, e.b1), hi: Math.max(e.b0, e.b1), t: 0, box: false });
+    }
+  }
+  // 1) 같은 선 정렬: 축별로 오프셋이 8 안쪽이면 길이 가중 평균으로
+  for (const ax of ['a', 'b'] as const) {
+    const L = lins.filter((l) => l.axis === ax).sort((x, y) => x.off - y.off);
+    let grp: Lin[] = [];
+    const flush = () => {
+      if (grp.length > 1) {
+        const wsum = grp.reduce((t, l) => t + (l.hi - l.lo), 0) || 1;
+        const off = grp.reduce((t, l) => t + l.off * (l.hi - l.lo), 0) / wsum;
+        for (const l of grp) l.off = off;
+      }
+      grp = [];
+    };
+    for (const l of L) { if (grp.length && l.off - grp[grp.length - 1].off > 8) flush(); grp.push(l); }
+    flush();
+  }
+  // 2) 끝 맞춤: 끝에서 14 안에 수직 방향 벽선이 지나가면 그 벽까지 늘이거나 줄인다(모서리 닫기)
+  const walls = lins.filter((l) => l.box);
+  for (const l of lins) {
+    for (const end of ['lo', 'hi'] as const) {
+      let best: { d: number; v: number } | null = null;
+      for (const o of walls) {
+        if (o === l || o.axis === l.axis) continue;
+        if (l.off < o.lo - 14 || l.off > o.hi + 14) continue;      // 그 벽이 이 선을 실제로 가로지를 때만
+        const target = end === 'lo' ? o.off - o.t / 2 : o.off + o.t / 2;
+        const d = Math.abs(l[end] - o.off);
+        if (d < 14 && (!best || d < best.d)) best = { d, v: l.box ? target : o.off };
+      }
+      if (best && (end === 'lo' ? best.v < l.hi - 5 : best.v > l.lo + 5)) l[end] = best.v;
+    }
+  }
+  // 3) 높이 통일: 벽은 벽끼리, 유리는 유리끼리 중앙값에 가까우면 맞춘다
+  for (const kind of ['wall', 'glass']) {
+    const hs = lins.filter((l) => l.e.kind === kind && l.e.h > 0).map((l) => l.e.h).sort((x, y) => x - y);
+    if (hs.length < 2) continue;
+    const med = hs[hs.length >> 1];
+    for (const l of lins) if (l.e.kind === kind && l.e.h > med * 0.75 && l.e.h < med * 1.33) l.e.h = med;
+  }
+  // 되돌려 쓰기
+  for (const l of lins) {
+    const e = l.e;
+    if (l.box) {
+      if (l.axis === 'a') { e.a0 = l.lo; e.a1 = l.hi; e.b0 = l.off - l.t / 2; e.b1 = l.off + l.t / 2; }
+      else { e.b0 = l.lo; e.b1 = l.hi; e.a0 = l.off - l.t / 2; e.a1 = l.off + l.t / 2; }
+    } else {
+      const fwd = l.axis === 'a' ? e.a1 >= e.a0 : e.b1 >= e.b0;
+      if (l.axis === 'a') { e.b0 = e.b1 = l.off; [e.a0, e.a1] = fwd ? [l.lo, l.hi] : [l.hi, l.lo]; }
+      else { e.a0 = e.a1 = l.off; [e.b0, e.b1] = fwd ? [l.lo, l.hi] : [l.hi, l.lo]; }
+    }
+  }
+  // 4) 바닥판 가장자리를 가까운 벽 바깥면에 맞춘다
+  const faceA = walls.filter((w) => w.axis === 'a').flatMap((w) => [w.off - w.t / 2, w.off + w.t / 2]);   // b 값들
+  const faceB = walls.filter((w) => w.axis === 'b').flatMap((w) => [w.off - w.t / 2, w.off + w.t / 2]);   // a 값들
+  const near = (v: number, arr: number[], tol: number) => { let best = v, bd = tol; for (const x of arr) { const d = Math.abs(x - v); if (d < bd) { bd = d; best = x; } } return best; };
+  for (const e of els) {
+    if (e.kind !== 'slab') continue;
+    const a0 = near(Math.min(e.a0, e.a1), faceB, 12), a1 = near(Math.max(e.a0, e.a1), faceB, 12);
+    const b0 = near(Math.min(e.b0, e.b1), faceA, 12), b1 = near(Math.max(e.b0, e.b1), faceA, 12);
+    if (a1 - a0 > 10 && b1 - b0 > 10) Object.assign(e, { a0, a1, b0, b1 });
+  }
+  // 5) 벽 가까운 큰 가구는 벽면에 밀착
+  for (const e of els) {
+    if (!HUG.has(e.kind)) continue;
+    const a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1);
+    let da = 0, db = 0, bd = 14;
+    for (const w of walls) {
+      if (w.axis === 'a' && Math.min(a1, w.hi) - Math.max(a0, w.lo) > 5) {          // 벽이 B 방향으로 막고 있음
+        for (const [face, side] of [[w.off + w.t / 2, b0], [w.off - w.t / 2, b1]] as const) {
+          const d = face - side;
+          if (Math.abs(d) < bd) { bd = Math.abs(d); da = 0; db = d; }
+        }
+      }
+      if (w.axis === 'b' && Math.min(b1, w.hi) - Math.max(b0, w.lo) > 5) {
+        for (const [face, side] of [[w.off + w.t / 2, a0], [w.off - w.t / 2, a1]] as const) {
+          const d = face - side;
+          if (Math.abs(d) < bd) { bd = Math.abs(d); db = 0; da = d; }
+        }
+      }
+    }
+    if (da || db) Object.assign(e, { a0: e.a0 + da, a1: e.a1 + da, b0: e.b0 + db, b1: e.b1 + db, points: e.points.map((q) => ({ ...q, a: q.a + da, b: q.b + db })) });
+  }
+  return els;
+}

@@ -6,7 +6,7 @@ import { SceneSchema, KINDS, DIRS, COLORS, type El } from './schema';
 import { getSample, inClaude } from './platform';
 import { renderRegion, splitRegions, type Rect } from './grid';
 import { P, getProjection, liftShift } from './iso';
-import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, groundScene, type Field } from './fit';
+import { edgeField, fitDraft, acceptEdit, acceptAdd, acceptDel, snap, groundScene, regularizeStructure, type Field } from './fit';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -336,7 +336,7 @@ async function runSample(opts: Parameters<typeof runAI>[0]): Promise<El[]> {
   const merged = order.flatMap((idx) => results[idx] ?? []);
   if (!merged.length) throw new Error('AI 응답에서 도면 요소를 읽지 못했어요. 다시 시도해 주세요.');
   // 공간 규칙: 건물 밖 물건 제외, 뜬 물건은 받침 위나 바닥으로, 벽과 겹치면 밀어내기, 비정상 크기 줄이기
-  const g = groundScene(merged, field);
+  const g = groundScene(regularizeStructure(merged), field);
   opts.onProgress?.(`공간 정리 · 받침에 올림 ${g.lifted} · 바닥으로 내림 ${g.dropped2floor} · 벽에서 밀어냄 ${g.pushed} · 건물 밖 제외 ${g.removed} · 크기 조정 ${g.resized}`);
   return g.els;
 }

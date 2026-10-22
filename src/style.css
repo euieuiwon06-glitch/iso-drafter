@@ -233,3 +233,6 @@ dialog .spacer { flex: 1; }
 .mode-seg { min-width: min(420px, 100%); }
 .mode-seg button { padding: 0 14px; height: 32px; font-size: 13px; }
 body[data-mode="flat"] .iso-only { display: none !important; }
+
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.row2 .btn { height: 36px; }

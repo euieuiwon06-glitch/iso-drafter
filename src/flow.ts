@@ -304,6 +304,7 @@ async function renderResult() {
   const seq = ++renderSeq;
   if (detailMode === 'vector') $('traceState').textContent = '원본 선을 벡터로 따는 중…';
   const svg = await resultSvg();
+  lastSvg = svg;
   if (seq !== renderSeq) return;
   $('traceState').textContent = '';
   if (svgUrl) URL.revokeObjectURL(svgUrl);
@@ -363,6 +364,7 @@ const STROKE_PRESET: Record<string, [number, number]> = { thin: [0.95, 0.65], no
 type ConvMode = 'iso' | 'flat';
 let convMode: ConvMode = (() => { try { return (localStorage.getItem('iso-drafter:mode') as ConvMode) || 'iso'; } catch { return 'iso'; } })();
 let flatOut: string | null = null;
+let lastSvg = '';       // 화면에 보이는 결과 SVG(복사용)
 function applyMode() {
   $('convMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.m === convMode));
   document.body.dataset.mode = convMode;
@@ -395,7 +397,7 @@ async function convertFlat(file: File) {
     step = 'vec'; mark('vec', 'now');
     setTraceAxes(0, 90);
     const f = await vectorizeFlat(rectImg, msg);
-    flatOut = flatSvg(f);
+    flatOut = flatSvg(f); lastSvg = flatOut;
     mark('vec', 'done'); mark('done', 'done');
     result = null;
     if (svgUrl) URL.revokeObjectURL(svgUrl);
@@ -411,6 +413,20 @@ async function convertFlat(file: File) {
     ($('btnStop') as HTMLButtonElement).textContent = '처음으로';
   } finally { abort = null; stopTicker(); setBusy(null); }
 }
+
+// ---------------------------------------------------------------- SVG 복사
+$('btnResCopy').onclick = () => {
+  const text = lastSvg, btn = $('btnResCopy');
+  if (!text) return;
+  const done = (ok: boolean) => { btn.textContent = ok ? '복사했어요' : '복사 실패'; setTimeout(() => (btn.textContent = 'SVG 복사'), 1600); };
+  // 클릭 안에서 바로 호출해야 권한이 유지된다. 막히면 숨긴 입력칸을 선택해 복사.
+  navigator.clipboard?.writeText(text).then(() => done(true), () => {
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove(); done(ok);
+  }) ?? done(false);
+};
 
 // ---------------------------------------------------------------- buttons
 const fileInput = $('fileConvert') as HTMLInputElement;
