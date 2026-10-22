@@ -455,3 +455,158 @@ export async function vectorizeInk(img: HTMLImageElement, structureSvg: string |
   vecCache.set(key, d);
   return d;
 }
+
+// ================================================================ 색 면 벡터화(그래픽 벡터화 모드)
+// 채도 있는 색 면과 옅은 회색 면을 몇 가지 색으로 나눠, 각 색의 영역 윤곽을 같은 직선 교정 방식으로 따서 채운다.
+export type ColorLayer = { fill: string; d: string; share: number };
+
+export async function vectorizeColors(img: HTMLImageElement, onStage?: (s: string) => void): Promise<ColorLayer[]> {
+  onStage?.('색 면을 나누는 중…');
+  await yieldUI();
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const g = cv.getContext('2d', { willReadFrequently: true })!;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0);
+  const px = g.getImageData(0, 0, w, h).data;
+  // 칸: 채도 있는 색은 색상 12칸 × 밝기 2칸, 무채색은 옅은 회색 2칸
+  const NB = 12 * 2 + 2, cls = new Int16Array(w * h).fill(-1);
+  const sum = new Float64Array(NB * 3), cnt = new Float64Array(NB);
+  for (let i = 0; i < w * h; i++) {
+    const r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+    const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), sat = mx - mn, lum = 0.299 * r + 0.587 * gg + 0.114 * b;
+    let c = -1;
+    if (sat > 45) {
+      let hue = 0;
+      if (mx === r) hue = ((gg - b) / sat + 6) % 6; else if (mx === gg) hue = (b - r) / sat + 2; else hue = (r - gg) / sat + 4;
+      c = Math.floor((hue / 6) * 12) % 12 * 2 + (lum < 150 ? 0 : 1);
+    } else if (lum >= 165 && lum < 238) c = 24 + (lum < 205 ? 0 : 1);
+    if (c < 0) continue;
+    cls[i] = c; cnt[c]++; sum[c * 3] += r; sum[c * 3 + 1] += gg; sum[c * 3 + 2] += b;
+  }
+  const layers: ColorLayer[] = [];
+  const order = [...Array(NB).keys()].filter((c) => cnt[c] > w * h * 0.003).sort((x, y) => cnt[y] - cnt[x]);
+  for (const c of order) {
+    // 칸 마스크를 5×5로 부드럽게(경계 계단·잡티 정리) → 0.5 등고선
+    const m = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) m[i] = cls[i] === c ? 1 : 0;
+    const t = new Float32Array(w * h), o = new Float32Array(w * h), R = 2;
+    for (let y = 0; y < h; y++) { let acc = 0; for (let x = -R; x < w + R; x++) { if (x + R < w) acc += m[y * w + x + R]; if (x - R - 1 >= 0) acc -= m[y * w + x - R - 1]; if (x >= 0 && x < w) t[y * w + x] = acc / (2 * R + 1); } }
+    for (let x = 0; x < w; x++) { let acc = 0; for (let y = -R; y < h + R; y++) { if (y + R < h) acc += t[(y + R) * w + x]; if (y - R - 1 >= 0) acc -= t[(y - R - 1) * w + x]; if (y >= 0 && y < h) o[y * w + x] = acc / (2 * R + 1); } }
+    for (let x = 0; x < w; x++) { o[x] = 0; o[(h - 1) * w + x] = 0; }
+    for (let y = 0; y < h; y++) { o[y * w] = 0; o[y * w + w - 1] = 0; }
+    const loops = contours(o, w, h, 0.5).filter((l) => area(l) >= 40);
+    if (!loops.length) continue;
+    const polys = loops.map((l) => loopPoly(l, 0.8)).filter((q) => q.length >= 3);
+    const edges = polys.map((q) => polyEdges(q, 6));
+    alignEdges(edges.flat(), 1.5);
+    const d = polys.map((q, i) => polyPath(rebuild(q, edges[i], 5), edges[i])).join('');
+    const n = cnt[c], hex = (v: number) => Math.round(v / n).toString(16).padStart(2, '0');
+    layers.push({ fill: `#${hex(sum[c * 3])}${hex(sum[c * 3 + 1])}${hex(sum[c * 3 + 2])}`, d, share: n / (w * h) });
+    await yieldUI();
+  }
+  return layers;
+}
+
+// ================================================================ 평면 그래픽 벡터화
+// 대표 색을 k-평균으로 뽑아 화소마다 가장 가까운 색으로 나누고, 색마다 영역 윤곽을 따서 채운다.
+// 곧은 변은 수평·수직(및 setTraceAxes로 정한 축)에 맞추고, 곡선은 매끈하게 둔다.
+export type FlatResult = { w: number; h: number; bg: string; layers: { fill: string; d: string }[] };
+
+export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string) => void, maxColors = 10): Promise<FlatResult> {
+  onStage?.('대표 색을 뽑는 중…');
+  await yieldUI();
+  const W0 = img.naturalWidth, H0 = img.naturalHeight;
+  const k = Math.max(1, Math.min(2, Math.sqrt(4e6 / (W0 * H0))));      // 작은 그림은 키워서 가는 선을 살린다
+  const w = Math.round(W0 * k), h = Math.round(H0 * k);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const g = cv.getContext('2d', { willReadFrequently: true })!;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(img, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+  // k-평균(표본 4만 개, 10회)
+  const N = w * h, step = Math.max(1, Math.floor(N / 40000));
+  const sample: number[][] = [];
+  for (let i = 0; i < N; i += step) sample.push([px[i * 4], px[i * 4 + 1], px[i * 4 + 2]]);
+  let C = Array.from({ length: maxColors }, (_, j) => sample[Math.floor(((j + 0.5) / maxColors) * sample.length)].slice());
+  // k-means++ 비슷하게: 서로 먼 색부터
+  C = [sample[0].slice()];
+  while (C.length < maxColors) {
+    let best = sample[0], bd = -1;
+    for (let i = 0; i < sample.length; i += 7) { const q = sample[i]; const d = Math.min(...C.map((c) => (c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 + (c[2] - q[2]) ** 2)); if (d > bd) { bd = d; best = q; } }
+    if (bd < 300) break;
+    C.push(best.slice());
+  }
+  for (let it = 0; it < 10; it++) {
+    const acc = C.map(() => [0, 0, 0, 0]);
+    for (const q of sample) { let bi = 0, bd = Infinity; C.forEach((c, j) => { const d = (c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 + (c[2] - q[2]) ** 2; if (d < bd) { bd = d; bi = j; } }); const a = acc[bi]; a[0] += q[0]; a[1] += q[1]; a[2] += q[2]; a[3]++; }
+    C = acc.filter((a) => a[3] > 0).map((a) => [a[0] / a[3], a[1] / a[3], a[2] / a[3]]);
+  }
+  // 비슷한 색 합치기
+  const merged: number[][] = [];
+  for (const c of C) if (!merged.some((m) => (m[0] - c[0]) ** 2 + (m[1] - c[1]) ** 2 + (m[2] - c[2]) ** 2 < 28 ** 2)) merged.push(c);
+  C = merged;
+  onStage?.(`색 ${C.length}가지로 나누는 중…`);
+  await yieldUI();
+  const lab = new Uint8Array(N), cnt = new Float64Array(C.length);
+  for (let i = 0; i < N; i++) {
+    const r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+    let bi = 0, bd = Infinity;
+    for (let j = 0; j < C.length; j++) { const c = C[j], d = (c[0] - r) ** 2 + (c[1] - gg) ** 2 + (c[2] - b) ** 2; if (d < bd) { bd = d; bi = j; } }
+    lab[i] = bi; cnt[bi]++;
+  }
+  // 경계의 중간색(두 주요 색을 잇는 선분 근처의 작은 무리)은 화소마다 가까운 쪽 주요 색으로 합친다
+  const total = N, major = [...C.keys()].filter((j) => cnt[j] >= total * 0.012);
+  if (major.length < 2) major.splice(0, major.length, ...[...C.keys()].sort((x, y) => cnt[y] - cnt[x]).slice(0, 2));
+  const between = new Map<number, [number, number]>();
+  for (const j of C.keys()) {
+    if (major.includes(j)) continue;
+    let best: [number, number] | null = null, bd = 26;
+    for (let x = 0; x < major.length; x++) for (let y = x + 1; y < major.length; y++) {
+      const A = C[major[x]], B = C[major[y]], c = C[j];
+      const ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], ac = [c[0] - A[0], c[1] - A[1], c[2] - A[2]];
+      const L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1, tt = (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) / L2;
+      if (tt < 0.05 || tt > 0.95) continue;
+      const dd = Math.hypot(ac[0] - ab[0] * tt, ac[1] - ab[1] * tt, ac[2] - ab[2] * tt);
+      if (dd < bd) { bd = dd; best = [major[x], major[y]]; }
+    }
+    if (best) between.set(j, best);
+  }
+  if (between.size) for (let i = 0; i < N; i++) {
+    const pair = between.get(lab[i]);
+    if (!pair) continue;
+    const A = C[pair[0]], B = C[pair[1]], r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+    const ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1;
+    const tt = (ab[0] * (r - A[0]) + ab[1] * (gg - A[1]) + ab[2] * (b - A[2])) / L2;
+    cnt[lab[i]]--; lab[i] = tt < 0.5 ? pair[0] : pair[1]; cnt[lab[i]]++;
+  }
+  const order = [...C.keys()].filter((j) => cnt[j] > 0).sort((x, y) => cnt[y] - cnt[x]);
+  const hex = (c: number[]) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  const bg = hex(C[order[0]]);
+  const layers: { fill: string; d: string }[] = [];
+  const m = new Float32Array(N), t = new Float32Array(N);
+  for (const ci of order.slice(1)) {
+    onStage?.(`색 면을 곡선으로 따는 중… (${layers.length + 1}/${order.length - 1})`);
+    await yieldUI();
+    // 마스크를 3×3으로 살짝 부드럽게(계단 정리, 1px 선은 살림)
+    for (let i = 0; i < N; i++) m[i] = lab[i] === ci ? 1 : 0;
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      t[i] = (m[i - w - 1] + m[i - w] * 2 + m[i - w + 1] + m[i - 1] * 2 + m[i] * 4 + m[i + 1] * 2 + m[i + w - 1] + m[i + w] * 2 + m[i + w + 1]) / 16;
+    }
+    for (let x = 0; x < w; x++) { t[x] = 0; t[(h - 1) * w + x] = 0; }
+    for (let y = 0; y < h; y++) { t[y * w] = 0; t[y * w + w - 1] = 0; }
+    const loops = contours(t, w, h, 0.45).filter((l) => area(l) >= 4 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
+    if (!loops.length) continue;
+    const polys = loops.map((l) => loopPoly(l, 0.5)).filter((q) => q.length >= 3);
+    const edges = polys.map((q) => polyEdges(q, 6));
+    alignEdges(edges.flat(), 1.2);
+    const d = polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i])).join('');
+    layers.push({ fill: hex(C[ci]), d });
+  }
+  return { w: W0, h: H0, bg, layers };
+}
+
+export function flatSvg(r: FlatResult) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.w} ${r.h}" width="${r.w}" height="${r.h}"><rect width="${r.w}" height="${r.h}" fill="${r.bg}"/>` +
+    r.layers.map((l) => `<path fill="${l.fill}" fill-rule="evenodd" d="${l.d}"/>`).join('') + '</svg>';
+}

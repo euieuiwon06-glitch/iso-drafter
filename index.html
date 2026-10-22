@@ -13,7 +13,9 @@
   <div id="convertView" class="convert">
     <header class="top">
       <div class="brand">ISO<span>DRAFTER</span></div>
-      <span class="tag">아이소메트릭 이미지 → 정갈한 SVG</span>
+      <div class="seg mode-seg" id="convMode" role="group" aria-label="변환 방식">
+        <button data-m="iso">아이소메트릭 도면 재작도</button><button data-m="flat">평면 그래픽 벡터화</button>
+      </div>
       <div class="group end">
         <button class="btn" id="btnOpenEditor">에디터 열기</button>
         <button class="btn icon" id="btnKey2" title="API 키 설정">⚙</button>
@@ -23,8 +25,8 @@
 
     <section id="stepUpload" class="pane upload">
       <div class="intro">
-        <h1>아이소메트릭 그림을 올리면<br>투시를 바로잡고 도면처럼 다시 그려 드려요</h1>
-        <p>AI가 생성한 이미지처럼 끝점이나 투시가 어긋난 그림도 정확한 등각 축 위에 벽·바닥·가구·동선을 새로 그려 SVG로 만들어요.</p>
+        <h1>그림을 올리면<br>반듯하게 바로잡아 SVG로 만들어 드려요</h1>
+        <p id="modeDesc"></p>
       </div>
       <div class="resume" id="resumeBox" hidden>
         <span id="resumeText"></span>
@@ -37,13 +39,13 @@
         <span>PNG · JPG · WEBP</span>
       </label>
       <div class="opts">
-        <label>선 굵기
+        <label class="iso-only">선 굵기
           <select id="selStroke"><option value="thin">가늘게</option><option value="normal" selected>보통</option><option value="bold">굵게</option></select>
         </label>
-        <label>자동 보정 횟수
+        <label class="iso-only">자동 보정 횟수
           <select id="selRounds"><option value="0">0회 (빠름)</option><option value="1" selected>1회 (추천)</option><option value="2">2회</option><option value="3">3회</option></select>
         </label>
-        <span class="muted" id="keyState"></span>
+        <span class="muted iso-only" id="keyState"></span>
       </div>
     </section>
 
@@ -79,21 +81,21 @@
             <button class="on" data-m="wipe">비교 슬라이더</button><button data-m="result">결과만</button><button data-m="orig">원본만</button>
           </div>
         </div>
-        <div class="field"><span>가구·제품 표현</span>
+        <div class="field iso-only"><span>가구·제품 표현</span>
           <div class="seg" id="detailMode">
             <button class="on" data-m="shapes">도형·곡선</button><button data-m="vector">원본 선 그대로(참고)</button>
           </div>
           <span class="muted small" id="traceState"></span>
         </div>
-        <label class="field"><span>구조선 굵기 (벽·바닥·유리) <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="40" max="300" value="135" /></label>
-        <label class="field"><span>가구·제품 선 굵기 <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
+        <label class="field iso-only"><span>구조선 굵기 (벽·바닥·유리) <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="40" max="300" value="135" /></label>
+        <label class="field iso-only"><span>가구·제품 선 굵기 <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
         <div class="stack">
           <button class="btn dark" id="btnResSvg">SVG 다운로드</button>
-          <button class="btn" id="btnResEdit">에디터에서 다듬기</button>
-          <button class="btn" id="btnResMore">AI 보정 한 번 더</button>
+          <button class="btn iso-only" id="btnResEdit">에디터에서 다듬기</button>
+          <button class="btn iso-only" id="btnResMore">AI 보정 한 번 더</button>
           <button class="btn" id="btnResNew">새 이미지</button>
         </div>
-        <p class="muted small">어긋난 가구나 빠진 벽은 ‘에디터에서 다듬기’로 드래그해 맞출 수 있어요.</p>
+        <p class="muted small iso-only">어긋난 가구나 빠진 벽은 ‘에디터에서 다듬기’로 드래그해 맞출 수 있어요.</p>
       </div>
     </section>
   </div>

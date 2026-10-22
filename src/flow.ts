@@ -6,7 +6,7 @@ import { setBusy } from './busy';
 import { rectifyRGBA, readyCv } from './convert/rectify.js';
 import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { renderSVG, DETAIL_KINDS, setProjection, getProjection, ISO, type Proj } from './iso';
-import { vectorizeInk, setTraceAxes } from './trace';
+import { vectorizeInk, setTraceAxes, vectorizeFlat, flatSvg } from './trace';
 import { newId, type El, type Scene } from './schema';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -46,12 +46,12 @@ $('btnKey2').onclick = openKeyDialog;
 $('btnOpenEditor').onclick = () => show('editor');
 
 // ---------------------------------------------------------------- steps UI
-type StepKey = 'rect' | 'draft' | `fix${number}` | 'done';
+type StepKey = 'rect' | 'draft' | 'vec' | `fix${number}` | 'done';
 type Stats = { lines: number; before: number; after: number };
 
 // 단계별 예상 시간(초). 구독 호출 기준 관측치에 여유를 둔 범위.
 const ETA = { rect: [5, 20], draft: [90, 210], fix: [60, 150], done: [1, 2] } as const;
-const etaOf = (k: string): readonly [number, number] => (k === 'rect' ? ETA.rect : k === 'draft' ? ETA.draft : k === 'done' ? ETA.done : ETA.fix);
+const etaOf = (k: string): readonly [number, number] => (k === 'rect' ? ETA.rect : k === 'draft' ? ETA.draft : k === 'vec' ? [2, 15] as const : k === 'done' ? ETA.done : ETA.fix);
 const fmt = (sec: number) => (sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분${Math.round(sec % 60) ? ` ${Math.round(sec % 60)}초` : ''}`);
 const fmtRange = ([a, b]: readonly [number, number]) => (b < 60 ? `${a}~${b}초` : `${Math.round(a / 60 * 2) / 2}~${Math.round(b / 60 * 2) / 2}분`);
 
@@ -64,7 +64,7 @@ let ticker: number | undefined;
 
 function setSteps(keys: StepKey[], rounds: number) {
   stepKeys = keys;
-  const label = (k: StepKey) => (k === 'rect' ? '투시 교정' : k === 'draft' ? 'AI 해석 · 재작도' : k === 'done' ? '마무리' : `AI 자가 보정 ${k.slice(3)}/${rounds}`);
+  const label = (k: StepKey) => (k === 'rect' ? (convMode === 'flat' ? '수평·수직 교정' : '투시 교정') : k === 'draft' ? 'AI 해석 · 재작도' : k === 'vec' ? '색 나누기 · 벡터화' : k === 'done' ? '마무리' : `AI 자가 보정 ${k.slice(3)}/${rounds}`);
   $('steps').innerHTML = keys.map((k) => `<li data-k="${k}"><span class="t">${label(k)}</span><span class="eta">예상 ${fmtRange(etaOf(k))}</span></li>`).join('');
 }
 function li(k: StepKey) { return $('steps').querySelector<HTMLLIElement>(`li[data-k="${k}"]`); }
@@ -134,12 +134,12 @@ function rgbaToUrl(data: ArrayBuffer, w: number, h: number) {
   return c2.toDataURL('image/jpeg', 0.92);
 }
 
-async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Stats; proj: Proj }> {
+async function rectify(img: HTMLImageElement, mode: 'iso' | 'flat' = 'iso'): Promise<{ url: string; stats: Stats; proj: Proj }> {
   if (hostedInClaude()) {
     msg('OpenCV를 불러오는 중… (처음 한 번은 몇 초 걸려요)');
     const cv = await loadCvFromCdn();
     const id = imageRGBA(img);
-    const r = await rectifyRGBA(cv, id.data.buffer, id.width, id.height, msg);
+    const r = await rectifyRGBA(cv, id.data.buffer, id.width, id.height, msg, mode);
     return { url: rgbaToUrl(r.data, r.width, r.height), stats: r.stats, proj: r.proj };
   }
   return new Promise((resolve, reject) => {
@@ -156,7 +156,7 @@ async function rectify(img: HTMLImageElement): Promise<{ url: string; stats: Sta
       }
     };
     w.onerror = (e) => { w.terminate(); reject(new Error(`투시 교정 실패: ${e.message}`)); };
-    w.postMessage({ data: id.data.buffer, width: id.width, height: id.height }, [id.data.buffer]);
+    w.postMessage({ data: id.data.buffer, width: id.width, height: id.height, mode }, [id.data.buffer]);
   });
 }
 
@@ -186,6 +186,7 @@ const clearJob = () => { try { localStorage.removeItem(JOB_KEY); } catch { /* �
 const keysFor = (rounds: number): StepKey[] => ['rect', 'draft', ...Array.from({ length: rounds }, (_, i) => `fix${i + 1}` as StepKey), 'done'];
 
 async function convert(file: File) {
+  if (convMode === 'flat') { await convertFlat(file); return; }
   if (!(await aiMode())) { openKeyDialog(); return; }
   const rounds = +($('selRounds') as HTMLSelectElement).value;
   const srcUrl = await new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(file); });
@@ -267,6 +268,7 @@ function showPreview(els: El[]) {
 }
 
 function finish(els: El[], stats: Stats, secs: number) {
+  flatOut = null;
   result = { width: rectImg!.naturalWidth, height: rectImg!.naturalHeight, elements: withIds(els), proj: job?.proj ?? result?.proj };
   void renderResult();
   $('resStats').textContent =
@@ -357,6 +359,59 @@ function setStroke(w: number, d: number) {
 const STROKE_PRESET: Record<string, [number, number]> = { thin: [0.95, 0.65], normal: [1.35, 1.0], bold: [1.9, 1.4] };
 ($('selStroke') as HTMLSelectElement).onchange = (ev) => { const [w, d] = STROKE_PRESET[(ev.target as HTMLSelectElement).value]; setStroke(w, d); };
 
+// ---------------------------------------------------------------- 변환 방식: 아이소메트릭 도면 재작도(AI) / 평면 그래픽 벡터화
+type ConvMode = 'iso' | 'flat';
+let convMode: ConvMode = (() => { try { return (localStorage.getItem('iso-drafter:mode') as ConvMode) || 'iso'; } catch { return 'iso'; } })();
+let flatOut: string | null = null;
+function applyMode() {
+  $('convMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.m === convMode));
+  document.body.dataset.mode = convMode;
+  $('modeDesc').textContent = convMode === 'flat'
+    ? '포스터·인포그래픽 같은 평면 그래픽을 수평·수직으로 바로잡고, 색 면과 선을 깔끔한 벡터로 옮겨요. AI 없이 몇 초면 끝나요.'
+    : '아이소메트릭 그림의 투시를 바로잡고, AI가 벽·바닥·가구를 정확한 도형으로 다시 그려 도면처럼 만들어요.';
+}
+$('convMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.onclick = () => {
+  convMode = b.dataset.m as ConvMode;
+  try { localStorage.setItem('iso-drafter:mode', convMode); } catch { /* 저장 불가 */ }
+  applyMode();
+}));
+applyMode();
+
+async function convertFlat(file: File) {
+  abort = new AbortController();
+  const t0 = performance.now();
+  setSteps(['rect', 'vec', 'done'], 0);
+  show('run');
+  startTicker();
+  const srcUrl = await new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(file); });
+  ($('runImg') as HTMLImageElement).src = srcUrl;
+  let step: StepKey = 'rect';
+  try {
+    mark('rect', 'now');
+    const { url, stats } = await rectify(await loadImage(srcUrl), 'flat');
+    rectUrl = url; rectImg = await loadImage(url);
+    ($('runImg') as HTMLImageElement).src = url;
+    mark('rect', 'done');
+    step = 'vec'; mark('vec', 'now');
+    setTraceAxes(0, 90);
+    const f = await vectorizeFlat(rectImg, msg);
+    flatOut = flatSvg(f);
+    mark('vec', 'done'); mark('done', 'done');
+    result = null;
+    if (svgUrl) URL.revokeObjectURL(svgUrl);
+    svgUrl = URL.createObjectURL(new Blob([flatOut], { type: 'image/svg+xml' }));
+    ($('resSvg') as HTMLImageElement).src = svgUrl;
+    ($('resUnder') as HTMLImageElement).src = url;
+    $('resStats').textContent = `색 ${f.layers.length + 1}가지 · ${Math.round((performance.now() - t0) / 1000)}초` +
+      (stats.lines ? ` · 기울기 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '');
+    show('result');
+  } catch (err) {
+    mark(step, 'fail');
+    msg((err as Error)?.name === 'AbortError' ? '중단했어요.' : describeError(err));
+    ($('btnStop') as HTMLButtonElement).textContent = '처음으로';
+  } finally { abort = null; stopTicker(); setBusy(null); }
+}
+
 // ---------------------------------------------------------------- buttons
 const fileInput = $('fileConvert') as HTMLInputElement;
 fileInput.onchange = () => { const f = fileInput.files?.[0]; fileInput.value = ''; if (f) void convert(f); };
@@ -373,6 +428,7 @@ $('btnStop').onclick = () => {
   else { ($('btnStop') as HTMLButtonElement).textContent = '중단'; offerResume(); show(result ? 'result' : 'upload'); }
 };
 $('btnResSvg').onclick = () => {
+  if (flatOut) { void saveFile('flat-graphic.svg', flatOut, 'image/svg+xml'); return; }
   if (!result) return;
   void resultSvg().then((svg) => saveFile('iso-drawing.svg', svg, 'image/svg+xml'));
 };

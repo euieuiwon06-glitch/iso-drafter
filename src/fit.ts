@@ -1,6 +1,6 @@
 // 원본 대조: 요소의 윤곽선이 원본(투시 교정본)의 실제 선 위에 얼마나 놓이는지 재고,
 // 지어낸 요소는 버리고, 조금 어긋난 요소는 원본 선에 붙인다.
-import { P } from './iso';
+import { P, screenBox } from './iso';
 import type { El } from './schema';
 
 export type Field = { w: number; h: number; d: Uint8Array };   // 가장 가까운 잉크까지의 거리(1/3px 단위, 최대 255)
@@ -175,10 +175,13 @@ function inPoly([a, b]: [number, number], pts: { a: number; b: number }[]) {
 const topOf = (s: El) => s.z + (s.kind === 'bed' ? 42 : s.h || ({ table: 74, counter: 90, roundTable: 72, sofa: 40, armchair: 32, box: 30, planter: 40, shelf: 200, cabinet: 80 } as Record<string, number>)[s.kind] || 0);
 const moveEl = (e: El, da: number, db: number): El => ({ ...e, a0: e.a0 + da, a1: e.a1 + da, b0: e.b0 + db, b1: e.b1 + db, points: e.kind === 'lathe' ? e.points : e.points.map((q) => ({ ...q, a: q.a + da, b: q.b + db })) });
 
-export function groundScene(input: El[]) {
+export function groundScene(input: El[], field?: Field) {
   let lifted = 0, dropped2floor = 0, pushed = 0, removed = 0, resized = 0;
   const floors = input.filter((e) => e.kind === 'slab' || (e.kind === 'floor' && e.points.length >= 3));
-  const onFloor = (c: [number, number], m = 25) => !floors.length || floors.some((f) => (f.kind === 'slab' ? inRect(c, rectOf(f), m) : inPoly(c, f.points) || inRect(c, rectOf(f), Math.min(m, 10))));
+  // 바닥판이 없으면 벽들이 둘러싼 범위를 건물로 본다
+  const wallR = input.filter((e) => e.kind === 'wall' || e.kind === 'glass').map(rectOf);
+  const hull: Rect | null = wallR.length >= 2 ? [Math.min(...wallR.map((r) => r[0])), Math.max(...wallR.map((r) => r[1])), Math.min(...wallR.map((r) => r[2])), Math.max(...wallR.map((r) => r[3]))] : null;
+  const onFloor = (c: [number, number], m = 25) => (!floors.length ? !hull || inRect(c, hull, m) : false) || floors.some((f) => (f.kind === 'slab' ? inRect(c, rectOf(f), m) : inPoly(c, f.points) || inRect(c, rectOf(f), Math.min(m, 10))));
   const walls = input.filter((e) => e.kind === 'wall').map(rectOf);
   const supports = input.filter((e) => SUPPORTS.has(e.kind));
   const out: El[] = [];
@@ -200,8 +203,8 @@ export function groundScene(input: El[]) {
       if (e.h > lim[1]) { e = { ...e, h: lim[1] }; resized++; }
     }
     const c = centerOfEl(e);
-    // 건물(바닥) 밖
-    if (!onFloor(c)) { removed++; continue; }
+    // 건물(바닥) 밖, 또는 그 자리에 원본이 아무것도 그려져 있지 않음(지어낸 물건)
+    if (!onFloor(c) || (field && inkCover(e, field) < 0.05)) { removed++; continue; }
     // 높이: 받침 위 또는 바닥
     const under = supports.filter((s) => s !== e && inRect(c, rectOf(s), 4) && topOf(s) <= e.z + 25).sort((x, y) => topOf(y) - topOf(x))[0];
     if (e.z > 3 || ON_TOP_ONLY.has(e.kind)) {
@@ -227,4 +230,15 @@ export function groundScene(input: El[]) {
     out.push(e);
   }
   return { els: out, lifted, dropped2floor, pushed, removed, resized };
+}
+
+/** 요소의 화면 범위 안에서 원본 선 근처(2.5px)에 있는 표본의 비율 */
+export function inkCover(e: El, f: Field): number {
+  const [x0, y0, x1, y1] = screenBox(e, 2);
+  let n = 0, hit = 0;
+  const sx = Math.max(2, (x1 - x0) / 14), sy = Math.max(2, (y1 - y0) / 14);
+  for (let y = Math.max(0, y0); y < Math.min(f.h, y1); y += sy) for (let x = Math.max(0, x0); x < Math.min(f.w, x1); x += sx) {
+    n++; if (f.d[Math.floor(y) * f.w + Math.floor(x)] <= 7) hit++;
+  }
+  return n ? hit / n : 1;
 }

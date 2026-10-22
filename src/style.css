@@ -228,3 +228,8 @@ dialog .spacer { flex: 1; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--green-bg); color: var(--ink); font-weight: 600; }
 .field span b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* 변환 방식 선택 */
+.mode-seg { min-width: min(420px, 100%); }
+.mode-seg button { padding: 0 14px; height: 32px; font-size: 13px; }
+body[data-mode="flat"] .iso-only { display: none !important; }

@@ -22,7 +22,7 @@ export function detectSegments(cv, gray) {
  * 그림마다 실제 축 각도가 다르므로(30° 등각이 아닌 투시·축측 그림) 각도 분포의 봉우리로 축을 찾는다.
  * 목표 각도는 그림 자신의 축 각도(수직은 90°): 투시로 모이던 선만 평행하게 펴고, 시점 각도는 바꾸지 않는다.
  */
-export function classify(segs) {
+export function classify(segs, opts = {}) {
   const cand = segs.filter((s) => s.len >= 30).map((s) => ({ ...s, mx: (s.x1 + s.x2) / 2, my: (s.y1 + s.y2) / 2 }));
   // 길이 가중 각도 분포(1° 칸, 원형으로 ±3° 평활)
   const raw = new Float64Array(180), hist = new Float64Array(180);
@@ -38,9 +38,16 @@ export function classify(segs) {
   const down = peakNear(3, 80);       // 오른쪽 아래로 가는 축 → A(30°)
   const up = peakNear(100, 177);      // 오른쪽 위로 가는 축 → B(150°)
   const fams = [];
-  if (vert.w > total * 0.01) fams.push({ ref: vert.ang, target: 90 });
-  if (down.w > 0) fams.push({ ref: down.ang, target: down.ang, key: 'down' });
-  if (up.w > 0) fams.push({ ref: up.ang, target: up.ang, key: 'up' });
+  if (opts.flat) {
+    // 평면 그래픽: 수평(0°)·수직(90°)만 기준으로 편다
+    const hor = peakNear(-10, 10);
+    if (vert.w > 0) fams.push({ ref: vert.ang, target: 90 });
+    if (hor.w > 0) fams.push({ ref: hor.ang, target: 0 });
+  } else {
+    if (vert.w > total * 0.01) fams.push({ ref: vert.ang, target: 90 });
+    if (down.w > 0) fams.push({ ref: down.ang, target: down.ang, key: 'down' });
+    if (up.w > 0) fams.push({ ref: up.ang, target: up.ang, key: 'up' });
+  }
   if (!fams.length) return [];
 
   // 1차: 전체 봉우리 중 가장 가까운 계열(±20° 안)
@@ -168,7 +175,7 @@ export function meshForward(mesh, px, py) {
 }
 
 /** 메시를 따라 이미지를 다시 샘플링한다. 반환: {mat(RGBA), offX, offY} */
-export function remapImage(cv, srcRGBA, mesh) {
+export function remapImage(cv, srcRGBA, mesh, replicate = false) {
   const { h, nx, ny, V } = mesh;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let k = 0; k < nx * ny; k++) { minX = Math.min(minX, V[2 * k]); maxX = Math.max(maxX, V[2 * k]); minY = Math.min(minY, V[2 * k + 1]); maxY = Math.max(maxY, V[2 * k + 1]); }
@@ -198,7 +205,8 @@ export function remapImage(cv, srcRGBA, mesh) {
     }
   }
   const out = new cv.Mat();
-  cv.remap(srcRGBA, out, mapX, mapY, cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
+  // 평면 그래픽은 펴면서 생기는 빈 모서리를 가장자리 색으로 채운다
+  cv.remap(srcRGBA, out, mapX, mapY, cv.INTER_CUBIC, replicate ? cv.BORDER_REPLICATE : cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
   mapX.delete(); mapY.delete();
   return { mat: out, offX: minX, offY: minY };
 }

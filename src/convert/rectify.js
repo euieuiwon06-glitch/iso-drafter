@@ -5,14 +5,14 @@ import { angDiff } from './geom.js';
 const MAX_SIDE = 2000;
 
 /** RGBA 버퍼를 교정해 {data(ArrayBuffer), width, height, stats}를 돌려준다. */
-export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
+export async function rectifyRGBA(cv, data, width, height, post = () => {}, mode = 'iso') {
   let src = cv.matFromImageData(new ImageData(new Uint8ClampedArray(data), width, height));
   const k = Math.min(1, MAX_SIDE / Math.max(width, height));
   if (k < 1) { const d = new cv.Mat(); cv.resize(src, d, new cv.Size(Math.round(width * k), Math.round(height * k)), 0, 0, cv.INTER_AREA); src.delete(); src = d; }
   const gray = new cv.Mat(); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
   post('직선을 찾는 중…');
-  let kept = classify(detectSegments(cv, gray));
+  let kept = classify(detectSegments(cv, gray), { flat: mode === 'flat' });
   gray.delete();
 
   // 그림의 축 각도를 그대로 쓴다(30° 등각으로 돌리지 않는다). 투영: A = 오른쪽 아래 축, B = 오른쪽 위 축
@@ -27,7 +27,7 @@ export async function rectifyRGBA(cv, data, width, height, post = () => {}) {
     const after = residualAngles(mesh, kept).sort((a, b) => a - b);
     const p90 = (a) => a[Math.floor(a.length * 0.9)] ?? 0;
     stats = { lines: kept.length, before: p90(before), after: p90(after) };
-    out = remapImage(cv, src, mesh).mat;
+    out = remapImage(cv, src, mesh, mode === 'flat').mat;
     src.delete();
   }
 

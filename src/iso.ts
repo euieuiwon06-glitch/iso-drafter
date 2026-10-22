@@ -96,7 +96,8 @@ function chair(p: Pen, a: number, b: number, z0: number, face: string, w = 26, s
   const hw = w / 2;
   for (const [da, db] of [[-hw + 3, -hw + 3], [hw - 3, -hw + 3], [-hw + 3, hw - 3], [hw - 3, hw - 3]])
     p.line([[a + da, b + db, z0], [a + da, b + db, z0 + seat]], INK, 1.5);
-  p.box(a - hw, a + hw, b - hw, b + hw, z0 + seat - 4, 4, col, '#ECECEC', '#DEDEDE', INK, 1.6);
+  if (col === '#FFFFFF') roundBox(p, a - hw, a + hw, b - hw, b + hw, z0 + seat - 4, 4, hw * 0.35, col);
+  else p.box(a - hw, a + hw, b - hw, b + hw, z0 + seat - 4, 4, col, '#ECECEC', '#DEDEDE', INK, 1.6);
   const t = 4;
   const bb: [number, number, number, number] =
     face === '+b' ? [a - hw, a + hw, b - hw, b - hw + t] :
@@ -121,7 +122,7 @@ function table(p: Pen, a0: number, a1: number, b0: number, b1: number, z0: numbe
   [b0, b1] = [Math.min(b0, b1), Math.max(b0, b1)];
   for (const [a, b] of [[a0 + inset, b1 - inset], [a1 - inset, b1 - inset], [a0 + inset, b0 + inset], [a1 - inset, b0 + inset]])
     p.box(a - leg / 2, a + leg / 2, b - leg / 2, b + leg / 2, z0, h - top, '#D9D9D9', '#CFCFCF', '#BDBDBD', INK, 1.4);
-  p.box(a0, a1, b0, b1, z0 + h - top, top, '#FFFFFF', '#EFEFEF', '#E2E2E2', INK, 2.0);
+  roundBox(p, a0, a1, b0, b1, z0 + h - top, top, Math.min(5, (a1 - a0) / 10, (b1 - b0) / 10));
 }
 
 function shelf(p: Pen, e: El) {
@@ -296,6 +297,12 @@ function doorsAndDrawers(p: Pen, r: Rect4, dir: string, z0: number, h: number, n
     }
   }
 }
+/** 모서리가 둥근 상자(곡선 입체) */
+function roundBox(p: Pen, a0: number, a1: number, b0: number, b1: number, z: number, h: number, r: number, fill = '#FFFFFF') {
+  [a0, a1] = [Math.min(a0, a1), Math.max(a0, a1)]; [b0, b1] = [Math.min(b0, b1), Math.max(b0, b1)];
+  if (r < 1.5 || a1 - a0 < 4 || b1 - b0 < 4) { p.box(a0, a1, b0, b1, z, h, fill, '#F0F0F0', '#E2E2E2', INK, 1.8); return; }
+  smoothPrism(p, roundedRect(a0, a1, b0, b1, r), z, h, fill);
+}
 /** 둥근 모서리 사각형 조절점(곡선 입체용) */
 const roundedRect = (a0: number, a1: number, b0: number, b1: number, r: number): [number, number][] => {
   r = Math.min(r, (a1 - a0) / 2.2, (b1 - b0) / 2.2);
@@ -324,15 +331,15 @@ function leaves(p: Pen, a: number, b: number, z: number, h: number, r: number, n
 
 /** 소파·안락의자의 등받이와 팔걸이 */
 function backAndArms(p: Pen, dir: string, a0: number, a1: number, b0: number, b1: number, z: number, t: number, backH: number, armH: number) {
-  const W = ['#FFFFFF', '#F0F0F0', '#E2E2E2'] as const;
-  if (dir === '-b' || dir === '+b') {      // 등받이가 B1 쪽, 팔걸이가 A 양끝
-    p.box(a0, a1, b1 - t, b1, z, backH, ...W, INK, 1.8);
-    p.box(a0, a0 + t, b0, b1 - t, z, armH, ...W, INK, 1.8);
-    p.box(a1 - t, a1, b0, b1 - t, z, armH, ...W, INK, 1.8);
+  const r = Math.min(t * 0.45, 7);
+  if (dir === '-b' || dir === '+b') {      // 등받이가 B1 쪽, 팔걸이가 A 양끝(뒤→앞 순서로 그림)
+    roundBox(p, a0, a1, b1 - t, b1, z, backH, r);
+    roundBox(p, a0, a0 + t, b0, b1 - t + r, z, armH, r);
+    roundBox(p, a1 - t, a1, b0, b1 - t + r, z, armH, r);
   } else {                                  // 등받이가 A0 쪽, 팔걸이가 B 양끝
-    p.box(a0, a0 + t, b0, b1, z, backH, ...W, INK, 1.8);
-    p.box(a0 + t, a1, b1 - t, b1, z, armH, ...W, INK, 1.8);
-    p.box(a0 + t, a1, b0, b0 + t, z, armH, ...W, INK, 1.8);
+    roundBox(p, a0, a0 + t, b0, b1, z, backH, r);
+    roundBox(p, a0 + t - r, a1, b1 - t, b1, z, armH, r);
+    roundBox(p, a0 + t - r, a1, b0, b0 + t, z, armH, r);
   }
 }
 
@@ -435,9 +442,9 @@ export function drawElement(p: Pen, e: El) {
     }
     case 'armchair': {
       const a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1), z0 = e.z;
-      const W = ['#FFFFFF', '#F0F0F0', '#E2E2E2'] as const, t = Math.min(a1 - a0, b1 - b0) * 0.22, leg = 8;
+      const t = Math.min(a1 - a0, b1 - b0) * 0.22, leg = 8;
       for (const [la, lb] of [[a0 + 4, b0 + 4], [a1 - 4, b0 + 4], [a0 + 4, b1 - 4], [a1 - 4, b1 - 4]]) p.line([[la, lb, z0], [la, lb, z0 + leg]], INK, 1.6);
-      p.box(a0, a1, b0, b1, z0 + leg, 24, ...W, INK, 1.8);
+      roundBox(p, a0, a1, b0, b1, z0 + leg, 24, Math.min(9, t * 0.5));
       backAndArms(p, e.dir, a0, a1, b0, b1, z0 + leg + 24, t, 30, 14);
       break;
     }
@@ -517,7 +524,7 @@ export function drawElement(p: Pen, e: El) {
       if (headBehind) p.box(...headBox, z0, hb, ...W, INK, 1.8);
       const [ma0, ma1, mb0, mb1] = head === '-a' ? [a0 + t, a1, b0, b1] : head === '+a' ? [a0, a1 - t, b0, b1] : head === '-b' ? [a0, a1, b0 + t, b1] : [a0, a1, b0, b1 - t];
       p.box(ma0 + 2, ma1 - 2, mb0 + 2, mb1 - 2, z0, base, '#EDEDED', '#E2E2E2', '#D6D6D6', INK, 1.6);
-      p.box(ma0, ma1, mb0, mb1, z0 + base, mat, ...W, INK, 1.8);
+      roundBox(p, ma0, ma1, mb0, mb1, z0 + base, mat, 7);
       const zt = z0 + base + mat;
       // 이불: 발치에서 길이의 62%를 덮고 위쪽으로 접힌 띠
       const cover = 0.62, fold = 0.1;
@@ -528,7 +535,7 @@ export function drawElement(p: Pen, e: El) {
         return [ma0 - 2, ma1 + 2, mb0 + (mb1 - mb0) * f0, mb0 + (mb1 - mb0) * f1];
       };
       const dv = span(0, cover);
-      p.box(dv[0], dv[1], dv[2], dv[3], zt - mat * 0.6, mat * 0.6 + 4, '#FFFFFF', '#F4F4F4', '#E8E8E8', INK, 1.6);
+      roundBox(p, dv[0], dv[1], dv[2], dv[3], zt - mat * 0.6, mat * 0.6 + 4, 6);
       const fd = span(cover - fold, cover);
       p.box(fd[0], fd[1], fd[2], fd[3], zt + 4, 2.5, '#F7F7F7', '#EFEFEF', '#E5E5E5', INK, 1.2);
       // 베개 두 개(넓으면) 또는 하나
@@ -588,9 +595,9 @@ export function drawElement(p: Pen, e: El) {
     case 'box': p.box(e.a0, e.a1, e.b0, e.b1, e.z, e.h || 30, e.color === 'white' ? '#FFFFFF' : PALETTE[e.color], '#F0F0F0', '#E2E2E2', INK, 1.8); break;
     case 'sofa': {
       const a0 = Math.min(e.a0, e.a1), a1 = Math.max(e.a0, e.a1), b0 = Math.min(e.b0, e.b1), b1 = Math.max(e.b0, e.b1), z0 = e.z;
-      const W = ['#FFFFFF', '#F0F0F0', '#E2E2E2'] as const, leg = 8, t = Math.min(a1 - a0, b1 - b0) * 0.2;
+      const leg = 8, t = Math.min(a1 - a0, b1 - b0) * 0.2;
       for (const [la, lb] of [[a0 + 5, b0 + 5], [a1 - 5, b0 + 5], [a0 + 5, b1 - 5], [a1 - 5, b1 - 5]]) p.line([[la, lb, z0], [la, lb, z0 + leg]], INK, 1.6);
-      p.box(a0, a1, b0, b1, z0 + leg, 22, ...W, INK, 1.8);
+      roundBox(p, a0, a1, b0, b1, z0 + leg, 22, Math.min(8, t * 0.4));
       // 방석 구분선
       const zt = z0 + leg + 22, alongA = e.dir === '-b' || e.dir === '+b', n = Math.max(1, Math.round(e.n || Math.max(1, Math.round((alongA ? a1 - a0 : b1 - b0) / 60))));
       for (let i = 1; i < n; i++) {
