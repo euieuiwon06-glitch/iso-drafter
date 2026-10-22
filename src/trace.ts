@@ -309,14 +309,20 @@ const area = (p: Pt[]) => { let a = 0; for (let i = 0; i < p.length; i++) { cons
 type Edge = { i: number; j: number; ux: number; uy: number; mx: number; my: number; len: number; axis: number; straight: boolean };
 
 let AXIS_DIRS: Pt[] = [];
+let SNAP = Math.sin((7 * Math.PI) / 180);
 /** 투영 축(화면 각도, 도)으로 교정 축을 정한다: 수직 + A축 + B축 + 수평 */
 export function setTraceAxes(aDeg: number, bDeg: number) {
   const d = (t: number): Pt => [Math.cos((t * Math.PI) / 180), Math.sin((t * Math.PI) / 180)];
   AXIS_DIRS = [d(90), d(aDeg), d(bDeg), d(0)];
+  SNAP = Math.sin((7 * Math.PI) / 180);
+}
+/** 축 목록(화면 각도, 도)과 허용 각도로 교정 축을 정한다. 빈 목록이면 곧게 펴지 않는다 */
+export function setTraceAxisList(degs: number[], tolDeg = 7) {
+  AXIS_DIRS = degs.map((t): Pt => [Math.cos((t * Math.PI) / 180), Math.sin((t * Math.PI) / 180)]);
+  SNAP = Math.sin((tolDeg * Math.PI) / 180);
 }
 setTraceAxes(30, -30);
 
-const SNAP = Math.sin((7 * Math.PI) / 180);
 
 function polyEdges(p: Pt[], minLen: number): Edge[] {
   const n = p.length, E: Edge[] = [];
@@ -511,7 +517,7 @@ export async function vectorizeColors(img: HTMLImageElement, onStage?: (s: strin
 // 대표 색을 k-평균으로 뽑아 화소마다 가장 가까운 색으로 나누고, 색마다 영역 윤곽을 따서 채운다.
 // 곧은 변은 수평·수직(및 setTraceAxes로 정한 축)에 맞추고, 곡선은 매끈하게 둔다.
 export type FlatLayer = { fill: string; d: string; strokes: { width: number; d: string }[] };
-export type FlatResult = { w: number; h: number; bg: string; layers: FlatLayer[] };
+export type FlatResult = { w: number; h: number; bg: string; layers: FlatLayer[]; axes: number[] };
 
 export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string) => void, maxColors = 10): Promise<FlatResult> {
   onStage?.('대표 색을 뽑는 중…');
@@ -555,92 +561,190 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
     for (let j = 0; j < C.length; j++) { const c = C[j], d = (c[0] - r) ** 2 + (c[1] - gg) ** 2 + (c[2] - b) ** 2; if (d < bd) { bd = d; bi = j; } }
     lab[i] = bi; cnt[bi]++;
   }
-  // 경계의 중간색(두 주요 색을 잇는 선분 근처의 작은 무리)은 화소마다 가까운 쪽 주요 색으로 합친다
-  const total = N, major = [...C.keys()].filter((j) => cnt[j] >= total * 0.012);
-  if (major.length < 2) major.splice(0, major.length, ...[...C.keys()].sort((x, y) => cnt[y] - cnt[x]).slice(0, 2));
-  const between = new Map<number, [number, number]>();
-  for (const j of C.keys()) {
-    if (major.includes(j)) continue;
-    let best: [number, number] | null = null, bd = 26;
-    for (let x = 0; x < major.length; x++) for (let y = x + 1; y < major.length; y++) {
-      const A = C[major[x]], B = C[major[y]], c = C[j];
-      const ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], ac = [c[0] - A[0], c[1] - A[1], c[2] - A[2]];
-      const L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1, tt = (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) / L2;
-      if (tt < 0.05 || tt > 0.95) continue;
-      const dd = Math.hypot(ac[0] - ab[0] * tt, ac[1] - ab[1] * tt, ac[2] - ab[2] * tt);
-      if (dd < bd) { bd = dd; best = [major[x], major[y]]; }
+  // 진짜 색 / 경계 중간색(안티앨리어싱) 가르기:
+  // 양옆(1~2칸, 가로·세로·대각)이 서로 다른 두 색이고 그 화소 색이 두 색 사이에 있으면 경계 화소로 보고,
+  // 그 화소는 주변의 진짜 색들 사이 섞임 비율(덮임 정도)로 나눠 준다 → 1px 선도 끊기지 않고, 면 가장자리에 다른 색 테가 생기지 않는다.
+  const betw = (i: number, A: number, B: number) => {
+    const ca = C[A], cb = C[B], ab0 = cb[0] - ca[0], ab1 = cb[1] - ca[1], ab2 = cb[2] - ca[2];
+    const L2 = ab0 * ab0 + ab1 * ab1 + ab2 * ab2; if (L2 < 900) return false;
+    const r = px[i * 4] - ca[0], gg = px[i * 4 + 1] - ca[1], b = px[i * 4 + 2] - ca[2];
+    const t = (ab0 * r + ab1 * gg + ab2 * b) / L2;
+    return t > 0.04 && t < 0.96 && Math.hypot(r - ab0 * t, gg - ab1 * t, b - ab2 * t) < 30;
+  };
+  const OFF = [1, w, w + 1, w - 1, 2, 2 * w, 2 * w + 2, 2 * w - 2];
+  const solid = new Uint8Array(N), sc = new Float64Array(C.length);
+  for (let i = 0; i < N; i++) {
+    const j = lab[i], x = i % w;
+    let f = false;
+    if (x >= 2 && x < w - 2 && i >= 2 * w && i < N - 2 * w) for (const o of OFF) {
+      const A = lab[i - o], B = lab[i + o];
+      if (A !== j && B !== j && A !== B && betw(i, A, B)) { f = true; break; }
     }
-    if (best) between.set(j, best);
+    if (!f) { solid[i] = 1; sc[j]++; }
   }
-  if (between.size) for (let i = 0; i < N; i++) {
-    const pair = between.get(lab[i]);
-    if (!pair) continue;
-    const A = C[pair[0]], B = C[pair[1]], r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
-    const ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1;
-    const tt = (ab[0] * (r - A[0]) + ab[1] * (gg - A[1]) + ab[2] * (b - A[2])) / L2;
-    cnt[lab[i]]--; lab[i] = tt < 0.5 ? pair[0] : pair[1]; cnt[lab[i]]++;
-  }
-  // 경계 띠 색: 그 색 화소의 절반 이상이 '양옆이 서로 다른 두 색'인 1px 띠면, 화소마다 더 가까운 이웃 색으로 바꾼다
-  for (const j of C.keys()) {
-    if (cnt[j] === 0 || cnt[j] > N * 0.03) continue;
-    let fr = 0, tot = 0;
-    const isFringe = (i: number) => {
-      const x = i % w; if (x < 1 || x >= w - 1 || i < w || i >= N - w) return -1;
-      const L = lab[i - 1], R = lab[i + 1], U = lab[i - w], D = lab[i + w];
-      if (L !== j && R !== j && L !== R) return 0;
-      if (U !== j && D !== j && U !== D) return 1;
-      return -1;
-    };
-    for (let i = 0; i < N; i++) if (lab[i] === j) { tot++; if (isFringe(i) >= 0) fr++; }
-    if (!tot || fr / tot < 0.5) continue;
-    for (let i = 0; i < N; i++) {
-      if (lab[i] !== j) continue;
-      const x = i % w; if (x < 1 || x >= w - 1 || i < w || i >= N - w) continue;
-      const cands = [lab[i - 1], lab[i + 1], lab[i - w], lab[i + w]].filter((q) => q !== j);
-      if (!cands.length) continue;
-      const r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
-      let bi = cands[0], bd = Infinity;
-      for (const q of cands) { const c = C[q], d = (c[0] - r) ** 2 + (c[1] - gg) ** 2 + (c[2] - b) ** 2; if (d < bd) { bd = d; bi = q; } }
-      cnt[j]--; lab[i] = bi; cnt[bi]++;
-    }
-  }
-  const order = [...C.keys()].filter((j) => cnt[j] > 0).sort((x, y) => cnt[y] - cnt[x]);
-  const hex = (c: number[]) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
-  const bg = hex(C[order[0]]);
-  const layers: FlatLayer[] = [];
-  const t = new Float32Array(N);
+  const real = new Uint8Array(C.length);
+  for (const j of C.keys()) real[j] = sc[j] >= N * 0.0005 ? 1 : 0;
+  if (!real.some((v) => v)) real[[...C.keys()].sort((x, y) => sc[y] - sc[x])[0]] = 1;
   const rT = Math.max(2, Math.round(3 * k));          // 이보다 얇으면(약 6px 미만) 선으로 본다
-  for (const ci of order.slice(1)) {
-    onStage?.(`색 면·선을 따는 중… (${layers.length + 1}/${order.length - 1})`);
+  // 선으로만 쓰인 색이 배경과 다른 선 색 사이에 있으면(옅게 번진 가는 선) 그 선 색으로 합친다
+  const canon = [...C.keys()];
+  {
+    const bg0 = [...C.keys()].filter((j) => real[j]).sort((x, y) => sc[y] - sc[x])[0];
+    const lineOnly = new Uint8Array(C.length);
+    for (const j of C.keys()) {
+      if (!real[j] || j === bg0) continue;
+      const inv = new Uint8Array(N); for (let i = 0; i < N; i++) inv[i] = lab[i] === j ? 0 : 1;
+      const er = dilate(inv, w, h, rT);
+      let core = 0; for (let i = 0; i < N; i++) if (!er[i]) core++;
+      lineOnly[j] = core < sc[j] * 0.08 ? 1 : 0;
+    }
+    const cB = C[bg0];
+    for (const j of [...C.keys()].sort((x, y) => Math.hypot(...C[x].map((v, q) => v - cB[q])) - Math.hypot(...C[y].map((v, q) => v - cB[q])))) {
+      if (!lineOnly[j]) continue;
+      let best = -1, bd = Infinity;
+      for (const B of C.keys()) {
+        if (B === j || B === bg0 || !real[B] || !lineOnly[B]) continue;
+        const ca = cB, cb = C[B], ab = cb.map((v, q) => v - ca[q]), L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1;
+        const ac = C[j].map((v, q) => v - ca[q]), t = (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) / L2;
+        if (t < 0.12 || t > 0.95) continue;
+        if (Math.hypot(ac[0] - ab[0] * t, ac[1] - ab[1] * t, ac[2] - ab[2] * t) > 22) continue;
+        const d = Math.hypot(...C[j].map((v, q) => v - cb[q]));
+        if (d < bd) { bd = d; best = B; }
+      }
+      if (best >= 0) canon[j] = best;
+    }
+    for (const j of C.keys()) { let c = j; while (canon[c] !== c) c = canon[c]; canon[j] = c; }
+    for (const j of C.keys()) if (canon[j] !== j) { sc[canon[j]] += sc[j]; real[j] = 0; }
+  }
+  const bgI = [...C.keys()].filter((j) => real[j]).sort((x, y) => sc[y] - sc[x])[0];
+  const fgs = [...C.keys()].filter((j) => real[j] && j !== bgI).sort((x, y) => sc[y] - sc[x]);
+  const cov = new Map<number, Float32Array>(fgs.map((j) => [j, new Float32Array(N)]));
+  for (let i = 0; i < N; i++) {
+    const j = canon[lab[i]];
+    if (solid[i] && real[j]) { if (j !== bgI) cov.get(j)![i] = 1; continue; }
+    const r = px[i * 4], gg = px[i * 4 + 1], b = px[i * 4 + 2];
+    const S: number[] = [bgI];
+    const x = i % w, y = (i / w) | 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+      const q = yy * w + xx, l = canon[lab[q]]; if (solid[q] && real[l] && !S.includes(l)) S.push(l);
+    }
+    if (S.length === 1) S.push(...fgs);
+    let bA = -1, bB = -1, bt = 0, br = Infinity;
+    for (const A of S) for (const B of S) {
+      if (A === B || B === bgI) continue;
+      const ca = C[A], cb = C[B], ab0 = cb[0] - ca[0], ab1 = cb[1] - ca[1], ab2 = cb[2] - ca[2];
+      const L2 = ab0 * ab0 + ab1 * ab1 + ab2 * ab2 || 1;
+      const t = Math.max(0, Math.min(1, (ab0 * (r - ca[0]) + ab1 * (gg - ca[1]) + ab2 * (b - ca[2])) / L2));
+      const res = Math.hypot(r - ca[0] - ab0 * t, gg - ca[1] - ab1 * t, b - ca[2] - ab2 * t);
+      if (res < br) { br = res; bA = A; bB = B; bt = t; }
+    }
+    if (bB < 0) continue;
+    cov.get(bB)![i] += bt;
+    if (bA !== bgI) cov.get(bA)![i] += 1 - bt;
+  }
+  const hex = (c: number[]) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  const bg = hex(C[bgI]);
+  type Pass = { fill: string; shapes: string[]; polys: Pt[][]; lines: SLine[] };
+  const pass: Pass[] = [];
+  const samples: [number, number][] = [];               // 곧은 변·선의 [각도, 길이] → 그림의 축 판단
+  const sm = new Float32Array(N), tf = new Float32Array(N);
+  for (const ci of fgs) {
+    onStage?.(`색 면·선을 따는 중… (${pass.length + 1}/${fgs.length})`);
     await yieldUI();
-    const mask = new Uint8Array(N);
-    for (let i = 0; i < N; i++) mask[i] = lab[i] === ci ? 1 : 0;
+    const cv0 = cov.get(ci)!;
+    blur3(cv0, sm, w, h);
+    const mask = new Uint8Array(N); for (let i = 0; i < N; i++) mask[i] = sm[i] >= 0.4 ? 1 : 0;
     // 열림 연산으로 굵은 부분(면)과 얇은 부분(선)을 나눈다
     const inv = new Uint8Array(N); for (let i = 0; i < N; i++) inv[i] = 1 - mask[i];
     const er = dilate(inv, w, h, rT); for (let i = 0; i < N; i++) er[i] = 1 - er[i];
     const thick = dilate(er, w, h, rT + 1); for (let i = 0; i < N; i++) thick[i] &= mask[i];
-    // 아주 작은 면 조각(선이 꺾이며 살짝 두꺼워진 곳)은 선으로 되돌린다
-    dropSmall(thick, w, h, (rT * 2.5) ** 2);
-    const thin = new Uint8Array(N); for (let i = 0; i < N; i++) thin[i] = mask[i] && !thick[i] ? 1 : 0;
-    // 면: 부드럽게 → 등고선 → 사각형·둥근 사각형·원·타원이면 정확한 도형, 아니면 직선 교정 패스
-    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-      const i = y * w + x;
-      t[i] = (thick[i - w - 1] + thick[i - w] * 2 + thick[i - w + 1] + thick[i - 1] * 2 + thick[i] * 4 + thick[i + 1] * 2 + thick[i + w - 1] + thick[i + w] * 2 + thick[i + w + 1]) / 16;
+    // 굵게 잡혔어도 길쭉한 띠(굵은 선의 일부)는 선으로 돌려 한 굵기로 그린다
+    const din = insideDist(mask, w, h);
+    for (const comp of components(thick, w, h)) {
+      let mx = 0; for (const j of comp) if (din[j] > mx) mx = din[j];
+      const wpx = (2 * mx) / 3;
+      if (wpx <= 6.5 * k && comp.length >= 5 * wpx * wpx) for (const j of comp) thick[j] = 0;
     }
-    for (let x = 0; x < w; x++) { t[x] = 0; t[(h - 1) * w + x] = 0; }
-    for (let y = 0; y < h; y++) { t[y * w] = 0; t[y * w + w - 1] = 0; }
-    const loops = contours(t, w, h, 0.45).filter((l) => area(l) >= 6 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
-    const parts: string[] = [], free: Pt[][] = [];
-    for (const l of loops) { const sh = fitShape(l); if (sh) parts.push(sh); else free.push(l); }
+    dropSmall(thick, w, h, (rT * 2.5) ** 2);
+    const nearThick = dilate(thick, w, h, 1);
+    const thin = new Uint8Array(N); for (let i = 0; i < N; i++) thin[i] = mask[i] && !nearThick[i] ? 1 : 0;
+    // 면: 덮임 정도의 0.5 등고선 → 사각형·둥근 사각형·원·타원이면 정확한 도형, 아니면 직선 교정 패스(축은 뒤에서)
+    const thD = dilate(thick, w, h, 2);
+    for (let i = 0; i < N; i++) tf[i] = thD[i] ? sm[i] : 0;
+    for (let x = 0; x < w; x++) { tf[x] = 0; tf[(h - 1) * w + x] = 0; }
+    for (let y = 0; y < h; y++) { tf[y * w] = 0; tf[y * w + w - 1] = 0; }
+    const loops = contours(tf, w, h, 0.5).filter((l) => area(l) >= 6 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
+    const shapes: string[] = [], free: Pt[][] = [];
+    for (const l of loops) { const s = fitShape(l); if (s) shapes.push(s); else free.push(l); }
     const polys = free.map((l) => loopPoly(smoothClosed(l, 2), 0.5)).filter((q) => q.length >= 3);
-    const edges = polys.map((q) => polyEdges(q, 6));
-    alignEdges(edges.flat(), 1.2);
-    parts.push(...polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i])));
-    // 선: 중심선을 따서 일정 굵기의 한 줄 패스로
-    const strokes = await strokeVector(thin, thick, w, h, k);
-    if (parts.length || strokes.length) layers.push({ fill: hex(C[ci]), d: parts.join(''), strokes });
+    for (const q of polys) for (let i = 0; i < q.length; i++) {
+      const a = q[i], b = q[(i + 1) % q.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (L >= 10) samples.push([angOf(a, b), L]);
+    }
+    // 선: 중심선 → 한 줄 패스 조각(직선/곡선)
+    const lines = await strokeLines(thin, thick, cv0, w, h, k);
+    for (const ln of lines) for (const s of ln.segs) if (s.t === 'L') { const L = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]); if (L >= 6) samples.push([angOf(s.a, s.b), L]); }
+    pass.push({ fill: hex(C[ci]), shapes, polys, lines });
   }
-  return { w: W0, h: H0, bg, layers };
+  // 그림에 실제로 많이 쓰인 직선 방향만 축으로 삼는다(수평·수직이 없으면 안 맞추고, 대각선이 많으면 대각선도 축)
+  const axes = detectAxes(samples);
+  setTraceAxisList(axes, 4.5);
+  const layers: FlatLayer[] = [];
+  for (const P of pass) {
+    const edges = P.polys.map((q) => polyEdges(q, 6));
+    alignEdges(edges.flat(), 1.2);
+    const parts = [...P.shapes, ...P.polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i]))];
+    const strokes = strokePaths(P.lines);
+    if (parts.length || strokes.length) layers.push({ fill: P.fill, d: parts.join(''), strokes });
+  }
+  return { w: W0, h: H0, bg, layers, axes };
+}
+
+const angOf = (a: Pt, b: Pt) => ((((Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI) % 180) + 180) % 180;
+
+/** 직선들의 [각도, 길이] 분포에서 봉우리(전체 길이의 6% 이상)를 축으로. 수평·수직 근처(2°)는 정확히 0°/90° */
+function detectAxes(samples: [number, number][]): number[] {
+  const raw = new Float64Array(180);
+  let tot = 0;
+  for (const [a, l] of samples) { raw[Math.round(a) % 180] += l; tot += l; }
+  if (tot < 80) return [];
+  const mass = (d: number) => { let s = 0; for (let q = -3; q <= 3; q++) s += raw[(d + q + 180) % 180]; return s; };
+  const M = Array.from({ length: 180 }, (_, d) => mass(d));
+  const peaks: { ang: number; m: number }[] = [];
+  for (let d = 0; d < 180; d++) {
+    const v = M[d];
+    if (v < tot * 0.06 || v < 60) continue;
+    let top = true; for (let q = -4; q <= 4; q++) if (q && M[(d + q + 180) % 180] > v) top = false;
+    if (!top) continue;
+    let sx = 0, sw = 0; for (let q = -3; q <= 3; q++) { sx += q * raw[(d + q + 180) % 180]; sw += raw[(d + q + 180) % 180]; }
+    let ang = (((d + sx / (sw || 1)) % 180) + 180) % 180;
+    if (Math.min(ang, 180 - ang) < 2) ang = 0; else if (Math.abs(ang - 90) < 2) ang = 90;
+    if (!peaks.some((p) => Math.min(Math.abs(p.ang - ang), 180 - Math.abs(p.ang - ang)) < 6)) peaks.push({ ang, m: v });
+  }
+  return peaks.sort((a, b) => b.m - a.m).slice(0, 6).map((p) => Math.round(p.ang * 10) / 10);
+}
+
+function blur3(s: Float32Array, o: Float32Array, w: number, h: number) {
+  const t = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; t[i] = (s[x > 0 ? i - 1 : i] + 2 * s[i] + s[x < w - 1 ? i + 1 : i]) / 4; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; o[i] = (t[y > 0 ? i - w : i] + 2 * t[i] + t[y < h - 1 ? i + w : i]) / 4; }
+}
+
+/** 4방향 연결 덩어리(화소 번호 목록) */
+function components(m: Uint8Array, w: number, h: number): number[][] {
+  const seen = new Uint8Array(w * h), out: number[][] = [], st: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (!m[i] || seen[i]) continue;
+    const comp: number[] = []; st.push(i); seen[i] = 1;
+    while (st.length) {
+      const j = st.pop()!; comp.push(j);
+      const x = j % w;
+      for (const o of [x > 0 ? -1 : 0, x < w - 1 ? 1 : 0, -w, w]) { const q = j + o; if (o && q >= 0 && q < w * h && m[q] && !seen[q]) { seen[q] = 1; st.push(q); } }
+    }
+    out.push(comp);
+  }
+  return out;
 }
 
 export function flatSvg(r: FlatResult) {
@@ -707,127 +811,261 @@ function insideDist(m: Uint8Array, w: number, h: number) {
   return d;
 }
 
-type SPiece = { a: Pt; b: Pt; straight: boolean; dir: number; pts: Pt[] };
+type Seg = { t: 'L'; a: Pt; b: Pt; dir: number } | { t: 'C'; pts: Pt[] };
+type SLine = { width: number; closed: boolean; segs: Seg[] };
 
-async function strokeVector(thin: Uint8Array, thick: Uint8Array, w: number, h: number, k: number) {
+/** 가는 선 마스크 → 한 줄 선들(원본 좌표). 이어지는 조각은 하나로 잇고, 굵기는 색 덮임을 가로로 적분해 잰 뒤 비슷한 굵기끼리 하나로 맞춘다 */
+async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array, w: number, h: number, k: number): Promise<SLine[]> {
   let any = false; for (let i = 0; i < w * h; i++) if (thin[i]) { any = true; break; }
   if (!any) return [];
-  const dist = insideDist(thin, w, h);
   const sk = thin.slice();
   for (let x = 0; x < w; x++) { sk[x] = 0; sk[(h - 1) * w + x] = 0; }
   for (let y = 0; y < h; y++) { sk[y * w] = 0; sk[y * w + w - 1] = 0; }
   await thin2(sk, w, h);
-  const raw = chains(sk, w, h);
-  // 굵기: 중심선 위 거리의 2배(px), 선마다 중앙값
-  const items = raw.map((c) => {
-    const ws = c.map(([x, y]) => (2 * dist[y * w + x]) / 3 - 0.6).filter((v) => v > 0).sort((p, q) => p - q);   // 원본 획 폭(아래 면의 빈자리와 같게)
-    return { c, width: (ws.length ? ws[ws.length >> 1] : 0) / k };
-  }).filter((it) => it.width >= 0.75 && it.c.length >= Math.max(4, it.width * k * 1.5));   // 경계 잔선·짧은 가시는 버림
-  // 끝끼리 가까운(굵기 2.5배 안) 선 조각은 하나의 선으로 이어 붙인다 → 한 패스
-  for (let changed = true; changed;) {
-    changed = false;
-    outer: for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
-      const A = items[i], B = items[j];
-      if (Math.abs(A.width - B.width) > Math.max(1, 0.35 * Math.max(A.width, B.width))) continue;
-      const R = Math.max(4, Math.max(A.width, B.width) * k * 3.5);
-      const ends: [Pt, Pt, boolean, boolean][] = [[A.c[A.c.length - 1], B.c[0], false, false], [A.c[A.c.length - 1], B.c[B.c.length - 1], false, true], [A.c[0], B.c[0], true, false], [A.c[0], B.c[B.c.length - 1], true, true]];
-      for (const [p, q, revA, revB] of ends) {
-        if (Math.hypot(p[0] - q[0], p[1] - q[1]) > R) continue;
-        const ca = revA ? A.c.slice().reverse() : A.c, cb = revB ? B.c.slice().reverse() : B.c;
-        A.c = [...ca, ...cb]; A.width = (A.width * ca.length + B.width * cb.length) / (ca.length + cb.length);
-        items.splice(j, 1); changed = true; break outer;
-      }
-    }
-  }
-  // 끝 잇기: 자유로운 끝이 다른 선·면에서 굵기의 2.5배 안이면 그 점까지 늘인다
-  const allPts: Pt[] = items.flatMap((it) => it.c);
-  const grid = new Map<number, Pt[]>(), G = 8;
-  for (const p of allPts) { const key = Math.floor(p[0] / G) * 100000 + Math.floor(p[1] / G); (grid.get(key) ?? grid.set(key, []).get(key)!).push(p); }
-  const nearestOther = (p: Pt, own: Pt[], R: number): Pt | null => {
-    let best: Pt | null = null, bd = R;
-    for (let gx = Math.floor((p[0] - R) / G); gx <= Math.floor((p[0] + R) / G); gx++) for (let gy = Math.floor((p[1] - R) / G); gy <= Math.floor((p[1] + R) / G); gy++)
-      for (const q of grid.get(gx * 100000 + gy) ?? []) { if (own.includes(q)) continue; const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd && d > 1.5) { bd = d; best = q; } }
-    // 굵은 면 가장자리
-    for (let r = 1; r <= R; r++) for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
-      const x = p[0] + dx, y = p[1] + dy;
-      if (x > 0 && y > 0 && x < w && y < h && thick[y * w + x] && r < bd) { bd = r; best = [x, y]; }
-    }
-    return best;
+  // 굵기는 선 영역(면 제외)의 덮임으로만 잰다
+  const zone = dilate(thin, w, h, 2), cl = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) cl[i] = zone[i] && !thick[i] ? cv[i] : 0;
+  cv = cl;
+  const covAt = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) return 0;
+    const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0, i = y0 * w + x0;
+    return (cv[i] * (1 - fx) + cv[i + 1] * fx) * (1 - fy) + (cv[i + w] * (1 - fx) + cv[i + w + 1] * fx) * fy;
   };
-  for (const it of items) {
-    const R = Math.max(3, it.width * k * 2.5);
-    for (const end of [0, 1]) {
-      const p = end ? it.c[it.c.length - 1] : it.c[0];
-      const q = nearestOther(p, it.c, R);
-      if (q) { if (end) it.c.push(q); else it.c.unshift(q); }
-    }
-  }
-  // 조각으로 나눠 직선은 축에 맞추고(같은 줄은 정렬), 곡선은 매끈하게
-  const pieces: { it: typeof items[number]; ps: SPiece[] }[] = [];
-  const straightAll: SPiece[] = [];
-  for (const it of items) {
-    const ps: SPiece[] = [];
-    for (const piece of splitCorners(it.c)) {
-      if (piece.length < 2) continue;
-      const pts = rdp(smooth(piece, 2), 0.7).map(([x, y]) => [x / k, y / k] as Pt);
-      let a = pts[0], b = pts[pts.length - 1];
-      const straight = pts.length === 2 || rdp(pts, 1.0).length === 2;
-      let dir = -1;
-      if (straight) {
-        const vx = b[0] - a[0], vy = b[1] - a[1], L = Math.hypot(vx, vy) || 1;
-        AXIS_DIRS.forEach((u, j) => { if (Math.abs(u[0] * vy - u[1] * vx) / L < SNAP && dir < 0) dir = j; });
-        if (dir >= 0) {
-          const u = AXIS_DIRS[dir], m: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], hl = (u[0] * vx + u[1] * vy) / 2;
-          a = [m[0] - u[0] * hl, m[1] - u[1] * hl]; b = [m[0] + u[0] * hl, m[1] + u[1] * hl];
-        }
+  // 원본 획 폭 = 선에 수직으로 덮임 정도를 적분한 값(안티앨리어싱까지 반영)
+  const widthOf = (c: Pt[]) => {
+    const ws: number[] = [], st = Math.max(1, Math.floor(c.length / 40));
+    for (let i = Math.min(2, c.length - 1); i <= Math.max(0, c.length - 3); i += st) {
+      const p = c[Math.max(0, i - 3)], q = c[Math.min(c.length - 1, i + 3)];
+      const tx = q[0] - p[0], ty = q[1] - p[1], L = Math.hypot(tx, ty);
+      const [x, y] = c[i];
+      const dirs: Pt[] = L ? [[-ty / L, tx / L]] : [[1, 0], [0, 1]];
+      let best = Infinity;
+      for (const [nx, ny] of dirs) {
+        let s = covAt(x, y) * 0.5;
+        for (const sg of [1, -1]) for (let t = 0.5; t < 14 * k; t += 0.5) { const v = covAt(x + sg * nx * t, y + sg * ny * t); if (v < 0.05) break; s += v * 0.5; }
+        best = Math.min(best, s);
       }
-      const sp: SPiece = { a, b, straight, dir, pts };
-      ps.push(sp);
-      if (straight && dir >= 0) straightAll.push(sp);
+      ws.push(best);
     }
-    pieces.push({ it, ps });
+    ws.sort((a, b) => a - b);
+    return Math.min(7, (ws[ws.length >> 1] ?? 0) / k);
+  };
+  const items = chains(sk, w, h).map((c) => ({ c, width: widthOf(c) })).filter((it) => it.width >= 0.6);
+  // 끝 잇기: 갈림점·모서리에서 만나는 끝, 같은 방향으로 끊긴 틈을 짝지어 한 줄로
+  type End = { it: number; p: Pt; d: Pt };
+  const ends: End[] = [];
+  items.forEach((it, i) => {
+    const c = it.c, L = c.length, m = Math.min(L - 1, Math.max(3, Math.round(2 * it.width * k)));
+    for (const s of [0, 1]) {
+      const p = s ? c[L - 1] : c[0], q = s ? c[L - 1 - m] : c[m];
+      const dx = p[0] - q[0], dy = p[1] - q[1], n = Math.hypot(dx, dy) || 1;
+      ends.push({ it: i, p, d: [dx / n, dy / n] });
+    }
+  });
+  const cand: [number, number, number][] = [];
+  for (let a = 0; a < ends.length; a++) for (let b = a + 1; b < ends.length; b++) {
+    const A = ends[a], B = ends[b];
+    if (A.it === B.it && items[A.it].c.length < 12) continue;
+    const wa = items[A.it].width, wb = items[B.it].width, wm = Math.max(wa, wb);
+    const dx = B.p[0] - A.p[0], dy = B.p[1] - A.p[1];
+    const G = Math.max(14 * k, 10 * wm * k);
+    if (Math.abs(dx) > G || Math.abs(dy) > G) continue;
+    if (Math.abs(wa - wb) > Math.max(0.6, 0.4 * wm)) continue;
+    const dd = Math.hypot(dx, dy), Rj = Math.max(3, 1.8 * wm * k), dot = A.d[0] * B.d[0] + A.d[1] * B.d[1];
+    if (dd <= Rj) { if (dot <= 0.3) cand.push([dd / Rj + 1 + dot, a, b]); }
+    else if (dd <= G && (A.d[0] * dx + A.d[1] * dy) / dd > 0.985 && -(B.d[0] * dx + B.d[1] * dy) / dd > 0.985 &&
+      Math.abs(A.d[0] * dy - A.d[1] * dx) < Math.max(2 * k, 1.5 * wm * k)) cand.push([2 + dd / G, a, b]);   // 같은 줄 위에서 끊긴 틈
+    else if (dd <= G * 0.6 && (A.d[0] * dx + A.d[1] * dy) / dd > 0.92 && -(B.d[0] * dx + B.d[1] * dy) / dd > 0.92) cand.push([3 + dd / G, a, b]);   // 곡선 위에서 끊긴 틈
   }
-  // 같은 축·같은 줄(1.5px 안) 직선은 한 줄로
+  cand.sort((x, y) => x[0] - y[0]);
+  const partner = new Int32Array(ends.length).fill(-1);
+  for (const [, a, b] of cand) if (partner[a] < 0 && partner[b] < 0) { partner[a] = b; partner[b] = a; }
+  const vis = new Uint8Array(items.length), merged: { c: Pt[]; width: number; closed: boolean }[] = [];
+  const follow = (start: number, side: number) => {
+    const pts: Pt[] = [];
+    let it = start, sd = side, ws = 0, ls = 0, closed = false;
+    for (;;) {
+      vis[it] = 1;
+      const c = items[it].c;
+      pts.push(...(sd === 0 ? c : c.slice().reverse()));
+      ws += items[it].width * c.length; ls += c.length;
+      const pe = partner[it * 2 + (1 - sd)];
+      if (pe < 0) break;
+      const nx = ends[pe].it;
+      if (vis[nx]) { if (nx === start && pe === start * 2 + side) closed = true; break; }
+      it = nx; sd = pe - nx * 2;
+    }
+    merged.push({ c: pts, width: ws / ls, closed });
+  };
+  for (let i = 0; i < items.length; i++) for (const s of [0, 1]) if (!vis[i] && partner[i * 2 + s] < 0) follow(i, s);
+  for (let i = 0; i < items.length; i++) if (!vis[i]) follow(i, 0);
+  // 면 모서리에 남은 짧은 가시는 버린다
+  const nearThick = (p: Pt, r: number) => { for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const x = p[0] + dx, y = p[1] + dy; if (x >= 0 && y >= 0 && x < w && y < h && thick[y * w + x]) return true; } return false; };
+  const plen = (c: Pt[]) => { let s = 0; for (let i = 1; i < c.length; i++) s += Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1]); return s; };
+  const keep = merged.filter((m) => {
+    const L = plen(m.c), wk = m.width * k;
+    if (m.closed) return L > 3 * k;
+    if (L < 2.5 * wk && (nearThick(m.c[0], Math.ceil(wk) + 2) || nearThick(m.c[m.c.length - 1], Math.ceil(wk) + 2))) return false;
+    return !(L < 1.2 * wk && m.width < 1.2);
+  });
+  // 굵기 통일: 비슷한 굵기(1.3배 안)끼리 묶어 길이 가중 중앙값 하나로, 아주 적게 쓰인 굵기는 가까운 굵기로
+  const groups: { lo: number; hi: number; items: { m: typeof keep[number]; L: number }[] }[] = [];
+  for (const m of keep.map((m) => ({ m, L: plen(m.c) })).sort((a, b) => a.m.width - b.m.width)) {
+    const g = groups[groups.length - 1];
+    if (g && m.m.width <= g.hi * 1.3 + 0.3) { g.items.push(m); g.hi = m.m.width; } else groups.push({ lo: m.m.width, hi: m.m.width, items: [m] });
+  }
+  const tot = keep.reduce((s, m) => s + plen(m.c), 0) || 1;
+  const val = groups.map((g) => {
+    const s = g.items.reduce((t, q) => t + q.L, 0); let acc = 0;
+    for (const q of g.items) { acc += q.L; if (acc >= s / 2) return { v: q.m.width, s }; }
+    return { v: g.lo, s };
+  });
+  groups.forEach((g, i) => {
+    let v = val[i].v;
+    if (val[i].s < tot * 0.08) {
+      let bj = -1, br = 1.8;
+      val.forEach((o, j) => { if (j !== i && o.s >= tot * 0.08) { const r = Math.max(o.v, v) / Math.min(o.v, v); if (r < br) { br = r; bj = j; } } });
+      if (bj >= 0) v = val[bj].v;
+    }
+    v = Math.max(0.5, Math.round(v * 4) / 4);
+    for (const q of g.items) q.m.width = v;
+  });
+  // 자유로운 끝: 앞쪽(또는 아주 가까이)에 다른 선·면이 있으면 그 점까지 늘인다
+  const grid = new Map<number, Pt[]>(), GS = 8;
+  for (const m of keep) for (const p of m.c) { const key = Math.floor(p[0] / GS) * 100000 + Math.floor(p[1] / GS); (grid.get(key) ?? grid.set(key, []).get(key)!).push(p); }
+  for (const m of keep) {
+    if (m.closed || m.c.length < 2) continue;
+    const own = new Set(m.c), wk = m.width * k, R = Math.max(3, 2.5 * wk);
+    for (const end of [0, 1]) {
+      const c = m.c, L = c.length, p = end ? c[L - 1] : c[0], q0 = end ? c[Math.max(0, L - 1 - Math.round(2 * wk))] : c[Math.min(L - 1, Math.round(2 * wk))];
+      const dl = Math.hypot(p[0] - q0[0], p[1] - q0[1]) || 1, dir: Pt = [(p[0] - q0[0]) / dl, (p[1] - q0[1]) / dl];
+      const ok = (q: Pt, d: number) => d <= 1.5 * wk || ((q[0] - p[0]) * dir[0] + (q[1] - p[1]) * dir[1]) / d > 0.7;
+      let best: Pt | null = null, bd = R;
+      for (let gx = Math.floor((p[0] - R) / GS); gx <= Math.floor((p[0] + R) / GS); gx++) for (let gy = Math.floor((p[1] - R) / GS); gy <= Math.floor((p[1] + R) / GS); gy++)
+        for (const q of grid.get(gx * 100000 + gy) ?? []) { if (own.has(q)) continue; const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd && d > 1.5 && ok(q, d)) { bd = d; best = q; } }
+      for (let r = 1; r <= R && r < bd; r++) {
+        const q: Pt = [Math.round(p[0] + dir[0] * r), Math.round(p[1] + dir[1] * r)];
+        if (q[0] > 0 && q[1] > 0 && q[0] < w && q[1] < h && thick[q[1] * w + q[0]]) { bd = r; best = q; break; }
+      }
+      if (best) { if (end) c.push(best); else c.unshift(best); }
+    }
+  }
+  return keep.map((m) => ({ width: m.width, closed: m.closed, segs: fitChain(m.c, k, m.width, m.closed) }));
+}
+
+/** 중심선 → 직선 조각(길고 곧은 부분)과 곡선 조각(나머지)으로. 좌표는 원본 크기로 */
+function fitChain(c: Pt[], k: number, wpx: number, closed: boolean): Seg[] {
+  const wk = wpx * k;
+  const r = Math.max(2, Math.round(0.8 * wk));
+  let sp = closed ? smoothClosed(c, r) : smooth(c, r);
+  if (closed) sp = [...sp, sp[0]];
+  if (sp.length < 2) sp = [c[0], c[0]];
+  const eps = Math.max(0.9 * k, 0.3 * wk), Ls = Math.max(10 * k, 4 * wk);
+  const idx = rdpIdx(sp, eps), segs: Seg[] = [];
+  let run = -1;
+  const curve = (i0: number, i1: number) => {
+    const q = rdp(smooth(sp.slice(i0, i1 + 1), Math.max(2, Math.round(1.2 * wk))), 0.5 * k).map(([x, y]) => [x / k, y / k] as Pt);
+    if (q.length >= 2) segs.push({ t: 'C', pts: q });
+  };
+  for (let s = 0; s < idx.length - 1; s++) {
+    const i0 = idx[s], i1 = idx[s + 1];
+    if (idx.length === 2 || Math.hypot(sp[i1][0] - sp[i0][0], sp[i1][1] - sp[i0][1]) >= Ls) {
+      if (run >= 0) { curve(run, i0); run = -1; }
+      segs.push(fitLine(sp, i0, i1, k));
+    } else if (run < 0) run = i0;
+  }
+  if (run >= 0) curve(run, idx[idx.length - 1]);
+  return segs;
+}
+function rdpIdx(pts: Pt[], eps: number): number[] {
+  if (pts.length < 3) return pts.map((_, i) => i);
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const st: [number, number][] = [[0, pts.length - 1]];
+  while (st.length) {
+    const [i0, i1] = st.pop()!, a = pts[i0], ab = sub(pts[i1], a), L = Math.hypot(ab[0], ab[1]);
+    let bd = -1, bi = -1;
+    for (let i = i0 + 1; i < i1; i++) { const d = L > 1e-9 ? Math.abs(ab[0] * (pts[i][1] - a[1]) - ab[1] * (pts[i][0] - a[0])) / L : Math.hypot(pts[i][0] - a[0], pts[i][1] - a[1]); if (d > bd) { bd = d; bi = i; } }
+    if (bd > eps) { keep[bi] = 1; st.push([i0, bi], [bi, i1]); }
+  }
+  const out: number[] = []; keep.forEach((v, i) => v && out.push(i));
+  return out;
+}
+/** 점들에 맞는 직선(주성분 방향), 끝점은 첫·끝 점의 투영 */
+function fitLine(sp: Pt[], i0: number, i1: number, k: number): Seg {
+  let mx = 0, my = 0; const n = i1 - i0 + 1;
+  for (let i = i0; i <= i1; i++) { mx += sp[i][0]; my += sp[i][1]; }
+  mx /= n; my /= n;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (let i = i0; i <= i1; i++) { const dx = sp[i][0] - mx, dy = sp[i][1] - my; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; }
+  const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  let ux = Math.cos(th), uy = Math.sin(th);
+  if ((sp[i1][0] - sp[i0][0]) * ux + (sp[i1][1] - sp[i0][1]) * uy < 0) { ux = -ux; uy = -uy; }
+  const pr = (p: Pt): Pt => { const t = (p[0] - mx) * ux + (p[1] - my) * uy; return [(mx + ux * t) / k, (my + uy * t) / k]; };
+  return { t: 'L', a: pr(sp[i0]), b: pr(sp[i1]), dir: -1 };
+}
+
+/** 직선 조각을 그림 축에 맞추고(같은 줄은 정렬), 꺾임은 교점으로 모아 한 선 = 한 패스로. 굵기별로 묶는다 */
+function strokePaths(lines: SLine[]): { width: number; d: string }[] {
+  const Ls = lines.flatMap((ln) => ln.segs.filter((s): s is Extract<Seg, { t: 'L' }> => s.t === 'L'));
+  for (const s of Ls) {
+    const vx = s.b[0] - s.a[0], vy = s.b[1] - s.a[1], L = Math.hypot(vx, vy);
+    if (L < 3) continue;
+    let best = SNAP, bj = -1;
+    AXIS_DIRS.forEach((u, j) => { const c = Math.abs(u[0] * vy - u[1] * vx) / L; if (c < best) { best = c; bj = j; } });
+    if (bj < 0) continue;
+    const u = AXIS_DIRS[bj], m: Pt = [(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2], hl = (u[0] * vx + u[1] * vy) / 2;
+    s.a = [m[0] - u[0] * hl, m[1] - u[1] * hl]; s.b = [m[0] + u[0] * hl, m[1] + u[1] * hl]; s.dir = bj;
+  }
   for (let j = 0; j < AXIS_DIRS.length; j++) {
     const u = AXIS_DIRS[j], nrm: Pt = [-u[1], u[0]];
-    const L = straightAll.filter((p) => p.dir === j).map((p) => ({ p, o: nrm[0] * (p.a[0] + p.b[0]) / 2 + nrm[1] * (p.a[1] + p.b[1]) / 2 })).sort((x, y) => x.o - y.o);
-    let g: typeof L = [];
+    const G = Ls.filter((s) => s.dir === j).map((s) => ({ s, o: (nrm[0] * (s.a[0] + s.b[0]) + nrm[1] * (s.a[1] + s.b[1])) / 2, L: Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) })).sort((x, y) => x.o - y.o);
+    let g: typeof G = [];
     const flush = () => {
       if (g.length > 1) {
-        const o = g.reduce((t, q) => t + q.o, 0) / g.length;
-        for (const q of g) { const d = o - q.o; q.p.a = [q.p.a[0] + nrm[0] * d, q.p.a[1] + nrm[1] * d]; q.p.b = [q.p.b[0] + nrm[0] * d, q.p.b[1] + nrm[1] * d]; }
+        const sw = g.reduce((t, q) => t + q.L, 0), o = g.reduce((t, q) => t + q.o * q.L, 0) / sw;
+        for (const q of g) { const d = o - q.o; q.s.a = [q.s.a[0] + nrm[0] * d, q.s.a[1] + nrm[1] * d]; q.s.b = [q.s.b[0] + nrm[0] * d, q.s.b[1] + nrm[1] * d]; }
       }
       g = [];
     };
-    for (const q of L) { if (g.length && q.o - g[g.length - 1].o > 1.5) flush(); g.push(q); }
+    for (const q of G) { if (g.length && q.o - g[g.length - 1].o > 1.5) flush(); g.push(q); }
     flush();
   }
-  // 한 선 = 한 패스. 이웃 직선 조각은 교점에서 만나게
   const byWidth = new Map<number, string[]>();
-  for (const { it, ps } of pieces) {
-    if (!ps.length) continue;
-    const pt: Pt[] = [];
-    let d = '';
-    for (let i = 0; i < ps.length; i++) {
-      const p = ps[i], prev = ps[i - 1];
-      let start = p.a;
-      if (prev && prev.straight && p.straight && prev.dir !== p.dir) {
-        const X = lineX(prev.a, prev.b, p.a, p.b);
-        if (X && Math.hypot(X[0] - p.a[0], X[1] - p.a[1]) < 3 * Math.max(2, it.width)) start = X;
-      } else if (prev) start = prev.straight && p.straight ? [(prev.b[0] + p.a[0]) / 2, (prev.b[1] + p.a[1]) / 2] : (prev.straight ? prev.b : p.a);
-      if (!i) d += `M${n1(start[0])} ${n1(start[1])}`; else d += `L${n1(start[0])} ${n1(start[1])}`;
-      pt.push(start);
-      if (p.straight) { const nx = ps[i + 1]; if (!nx || !nx.straight) d += `L${n1(p.b[0])} ${n1(p.b[1])}`; }
-      else {
-        const q = p.pts;
-        for (let j = 0; j < q.length - 1; j++) {
-          const p0 = q[j - 1] ?? q[j], p1 = q[j], p2 = q[j + 1], p3 = q[j + 2] ?? p2;
-          d += `C${n1(p1[0] + (p2[0] - p0[0]) / 6)} ${n1(p1[1] + (p2[1] - p0[1]) / 6)} ${n1(p2[0] - (p3[0] - p1[0]) / 6)} ${n1(p2[1] - (p3[1] - p1[1]) / 6)} ${n1(p2[0])} ${n1(p2[1])}`;
-        }
+  for (const ln of lines) {
+    let S = ln.segs.slice();
+    if (!S.length) continue;
+    const near = 3 * Math.max(2, ln.width);
+    // 직선 사이에 낀 짧은 곡선(뭉개진 모서리)은 교점 모서리로
+    S = S.filter((s, i) => {
+      if (s.t !== 'C') return true;
+      const p = S[i - 1], n = S[i + 1];
+      if (p?.t !== 'L' || n?.t !== 'L') return true;
+      const X = lineX(p.a, p.b, n.a, n.b), mid = s.pts[s.pts.length >> 1];
+      return !(X && Math.hypot(X[0] - mid[0], X[1] - mid[1]) < near);
+    });
+    const join = (p: Seg, n: Seg) => {
+      if (p.t === 'L' && n.t === 'L') {
+        const X = lineX(p.a, p.b, n.a, n.b);
+        const q: Pt = X && Math.hypot(X[0] - n.a[0], X[1] - n.a[1]) < near ? X : [(p.b[0] + n.a[0]) / 2, (p.b[1] + n.a[1]) / 2];
+        p.b = q; n.a = q;
+      } else if (p.t === 'L' && n.t === 'C') n.pts[0] = p.b;
+      else if (p.t === 'C' && n.t === 'L') p.pts[p.pts.length - 1] = n.a;
+    };
+    S = S.map((s) => (s.t === 'L' ? { ...s, a: [...s.a] as Pt, b: [...s.b] as Pt } : { ...s, pts: s.pts.map((q) => [...q] as Pt) }));
+    for (let i = 1; i < S.length; i++) join(S[i - 1], S[i]);
+    if (ln.closed && S.length > 1) join(S[S.length - 1], S[0]);
+    const first = S[0].t === 'L' ? S[0].a : S[0].pts[0];
+    let d = `M${n1(first[0])} ${n1(first[1])}`;
+    for (const s of S) {
+      if (s.t === 'L') { d += `L${n1(s.b[0])} ${n1(s.b[1])}`; continue; }
+      const q = s.pts;
+      for (let j = 0; j < q.length - 1; j++) {
+        const p0 = q[j - 1] ?? q[j], p1 = q[j], p2 = q[j + 1], p3 = q[j + 2] ?? p2;
+        d += `C${n1(p1[0] + (p2[0] - p0[0]) / 6)} ${n1(p1[1] + (p2[1] - p0[1]) / 6)} ${n1(p2[0] - (p3[0] - p1[0]) / 6)} ${n1(p2[1] - (p3[1] - p1[1]) / 6)} ${n1(p2[0])} ${n1(p2[1])}`;
       }
     }
-    const wk = Math.round(it.width * 2) / 2;      // 0.5px 단위로 묶는다
-    (byWidth.get(wk) ?? byWidth.set(wk, []).get(wk)!).push(d);
+    if (ln.closed) d += 'Z';
+    (byWidth.get(ln.width) ?? byWidth.set(ln.width, []).get(ln.width)!).push(d);
   }
   return [...byWidth].map(([width, ds]) => ({ width, d: ds.join('') }));
 }

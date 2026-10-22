@@ -369,7 +369,7 @@ function applyMode() {
   $('convMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.m === convMode));
   document.body.dataset.mode = convMode;
   $('modeDesc').textContent = convMode === 'flat'
-    ? '포스터·인포그래픽 같은 평면 그래픽을 수평·수직으로 바로잡고, 색 면과 선을 깔끔한 벡터로 옮겨요. AI 없이 몇 초면 끝나요.'
+    ? '포스터·인포그래픽 같은 평면 그래픽을 색 면과 일정한 굵기의 선으로 옮겨요. 그림에 많이 쓰인 직선 방향(수평·수직·대각)만 골라 그 축에 맞춰 펴요. AI 없이 몇 초면 끝나요.'
     : '아이소메트릭 그림의 투시를 바로잡고, AI가 벽·바닥·가구를 정확한 도형으로 다시 그려 도면처럼 만들어요.';
 }
 $('convMode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.onclick = () => {
@@ -404,7 +404,7 @@ async function convertFlat(file: File) {
     svgUrl = URL.createObjectURL(new Blob([flatOut], { type: 'image/svg+xml' }));
     ($('resSvg') as HTMLImageElement).src = svgUrl;
     ($('resUnder') as HTMLImageElement).src = url;
-    $('resStats').textContent = `색 ${f.layers.length + 1}가지 · ${Math.round((performance.now() - t0) / 1000)}초` +
+    $('resStats').textContent = `색 ${f.layers.length + 1}가지 · 맞춘 축 ${f.axes.length ? f.axes.map((a) => `${a}°`).join('·') : '없음(곡선 위주)'} · ${Math.round((performance.now() - t0) / 1000)}초` +
       (stats.lines ? ` · 기울기 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '');
     show('result');
   } catch (err) {

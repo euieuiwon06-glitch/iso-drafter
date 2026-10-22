@@ -11,8 +11,8 @@ const r = await page.evaluate(async (src) => {
   const img = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = src; });
   const t0 = performance.now();
   const f = await t.vectorizeFlat(img);
-  return { t: Math.round(performance.now() - t0), colors: [f.bg, ...f.layers.map((l) => l.fill)], svg: t.flatSvg(f) };
+  return { axes: f.axes, t: Math.round(performance.now() - t0), colors: [f.bg, ...f.layers.map((l) => l.fill)], svg: t.flatSvg(f) };
 }, '/' + name);
-console.log('ms', r.t, 'colors', r.colors.join(' '), 'kb', Math.round(r.svg.length / 1024));
+console.log("axes", r.axes, "ms", r.t, 'colors', r.colors.join(' '), 'kb', Math.round(r.svg.length / 1024));
 fs.writeFileSync(out, r.svg);
 await browser.close();

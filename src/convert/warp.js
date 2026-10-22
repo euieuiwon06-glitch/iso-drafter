@@ -39,10 +39,10 @@ export function classify(segs, opts = {}) {
   const up = peakNear(100, 177);      // 오른쪽 위로 가는 축 → B(150°)
   const fams = [];
   if (opts.flat) {
-    // 평면 그래픽: 수평(0°)·수직(90°)만 기준으로 편다
+    // 평면 그래픽: 수평(0°)·수직(90°) 직선이 그림에 충분히(직선 길이의 약 8% 이상) 있을 때만 그 방향을 기준으로 편다
     const hor = peakNear(-10, 10);
-    if (vert.w > 0) fams.push({ ref: vert.ang, target: 90 });
-    if (hor.w > 0) fams.push({ ref: hor.ang, target: 0 });
+    if (vert.w > total * 0.02) fams.push({ ref: vert.ang, target: 90 });
+    if (hor.w > total * 0.02) fams.push({ ref: hor.ang, target: 0 });
   } else {
     if (vert.w > total * 0.01) fams.push({ ref: vert.ang, target: 90 });
     if (down.w > 0) fams.push({ ref: down.ang, target: down.ang, key: 'down' });
