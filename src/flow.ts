@@ -8,6 +8,7 @@ import { griddedImage, imageToJpeg, loadImage } from './grid';
 import { renderSVG, DETAIL_KINDS, setProjection, getProjection, ISO, type Proj } from './iso';
 import { vectorizeInk, setTraceAxes, vectorizeFlat, flatSvg } from './trace';
 import { newId, type El, type Scene } from './schema';
+import { guessKind } from './detect';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -185,7 +186,19 @@ const clearJob = () => { try { localStorage.removeItem(JOB_KEY); } catch { /* �
 
 const keysFor = (rounds: number): StepKey[] => ['rect', 'draft', ...Array.from({ length: rounds }, (_, i) => `fix${i + 1}` as StepKey), 'done'];
 
+let modeNote = '';
 async function convert(file: File) {
+  // 고른 방식과 그림 종류가 다르면(예: 포스터를 아이소메트릭 재작도로) 그림에 맞는 방식으로 바꿔서 진행한다
+  modeNote = '';
+  try {
+    const { kind } = await guessKind(file);
+    if (kind !== convMode) {
+      convMode = kind;
+      try { localStorage.setItem('iso-drafter:mode', convMode); } catch { /* 저장 불가 */ }
+      applyMode();
+      modeNote = kind === 'flat' ? ' · 평면 그래픽으로 보여서 평면 그래픽 벡터화로 바꿔 변환했어요' : ' · 아이소메트릭 그림으로 보여서 도면 재작도로 바꿔 변환했어요';
+    }
+  } catch { /* 판단 실패: 고른 방식대로 */ }
   if (convMode === 'flat') { await convertFlat(file); return; }
   if (!(await aiMode())) { openKeyDialog(); return; }
   const rounds = +($('selRounds') as HTMLSelectElement).value;
@@ -273,7 +286,7 @@ function finish(els: El[], stats: Stats, secs: number) {
   void renderResult();
   $('resStats').textContent =
     `요소 ${els.length}개 · ${secs}초` +
-    (stats.lines ? ` · 투시 오차 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '');
+    (stats.lines ? ` · 투시 오차 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '') + modeNote;
   show('result');
 }
 
@@ -405,7 +418,7 @@ async function convertFlat(file: File) {
     ($('resSvg') as HTMLImageElement).src = svgUrl;
     ($('resUnder') as HTMLImageElement).src = url;
     $('resStats').textContent = `색 ${f.layers.length + 1}가지 · 맞춘 축 ${f.axes.length ? f.axes.map((a) => `${a}°`).join('·') : '없음(곡선 위주)'} · ${Math.round((performance.now() - t0) / 1000)}초` +
-      (stats.lines ? ` · 기울기 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '');
+      (stats.lines ? ` · 기울기 ${stats.before.toFixed(1)}° → ${stats.after.toFixed(1)}° (직선 ${stats.lines}개 기준)` : '') + modeNote;
     show('result');
   } catch (err) {
     mark(step, 'fail');

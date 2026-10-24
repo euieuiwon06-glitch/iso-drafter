@@ -506,7 +506,7 @@ export async function vectorizeColors(img: HTMLImageElement, onStage?: (s: strin
     const polys = loops.map((l) => loopPoly(l, 0.8)).filter((q) => q.length >= 3);
     const edges = polys.map((q) => polyEdges(q, 6));
     alignEdges(edges.flat(), 1.5);
-    const d = polys.map((q, i) => polyPath(rebuild(q, edges[i], 5), edges[i])).join('');
+    const d = polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i])).join('');
     const n = cnt[c], hex = (v: number) => Math.round(v / n).toString(16).padStart(2, '0');
     layers.push({ fill: `#${hex(sum[c * 3])}${hex(sum[c * 3 + 1])}${hex(sum[c * 3 + 2])}`, d, share: n / (w * h) });
     await yieldUI();
@@ -651,17 +651,18 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   const pass: Pass[] = [];
   const samples: [number, number][] = [];               // 곧은 변·선의 [각도, 길이] → 그림의 축 판단
   const sm = new Float32Array(N), tf = new Float32Array(N), thickAll = new Uint8Array(N);
+  const thicks = new Map<number, Uint8Array>();
   for (const ci of fgs) {
-    onStage?.(`색 면·선을 따는 중… (${pass.length + 1}/${fgs.length})`);
+    onStage?.(`색 면을 나누는 중… (${thicks.size + 1}/${fgs.length})`);
     await yieldUI();
     const cv0 = cov.get(ci)!;
     blur3(cv0, sm, w, h);
     const mask = new Uint8Array(N); for (let i = 0; i < N; i++) mask[i] = sm[i] >= 0.4 || cv0[i] >= 0.3 ? 1 : 0;
-    // 열림 연산으로 굵은 부분(면)과 얇은 부분(선)을 나눈다
+    // 열림 연산으로 굵은 부분(면)과 얇은 부분(선 후보)을 나눈다
     const inv = new Uint8Array(N); for (let i = 0; i < N; i++) inv[i] = 1 - mask[i];
     const er = dilate(inv, w, h, rT); for (let i = 0; i < N; i++) er[i] = 1 - er[i];
     const thick = dilate(er, w, h, rT + 1); for (let i = 0; i < N; i++) thick[i] &= mask[i];
-    // 굵게 잡혔어도 길쭉한 띠(굵은 선의 일부)는 선으로 돌려 한 굵기로 그린다
+    // 굵게 잡혔어도 길쭉한 띠(굵은 선의 일부)는 선 후보로
     const din = insideDist(mask, w, h);
     for (const comp of components(thick, w, h)) {
       let mx = 0; for (const j of comp) if (din[j] > mx) mx = din[j];
@@ -669,25 +670,11 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
       if (wpx <= 6.5 * k && comp.length >= 5 * wpx * wpx) for (const j of comp) thick[j] = 0;
     }
     dropSmall(thick, w, h, (rT * 2.5) ** 2);
-    const thin = new Uint8Array(N); for (let i = 0; i < N; i++) thin[i] = mask[i] && !thick[i] ? 1 : 0;
-    // 면: 덮임 정도의 0.5 등고선 → 사각형·둥근 사각형·원·타원이면 정확한 도형, 아니면 직선 교정 패스(축은 뒤에서)
-    const thD = dilate(thick, w, h, 2);
-    for (let i = 0; i < N; i++) tf[i] = thD[i] ? sm[i] : 0;
-    for (let x = 0; x < w; x++) { tf[x] = 0; tf[(h - 1) * w + x] = 0; }
-    for (let y = 0; y < h; y++) { tf[y * w] = 0; tf[y * w + w - 1] = 0; }
-    const loops = contours(tf, w, h, 0.5).filter((l) => area(l) >= 6 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
-    const shapes: Pt[][] = [], free: Pt[][] = [];
-    for (const l of loops) { if (fitShape(l)) shapes.push(l); else free.push(l); }
-    const polys = free.map((l) => loopPoly(smoothClosed(l, 2), 0.5)).filter((q) => q.length >= 3);
-    for (const q of polys) for (let i = 0; i < q.length; i++) {
-      const a = q[i], b = q[(i + 1) % q.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (L >= 10) samples.push([angOf(a, b), L]);
-    }
     for (let i = 0; i < N; i++) thickAll[i] |= thick[i];
-    pass.push({ fill: hex(C[ci]), shapes, polys, lines: [] });
+    thicks.set(ci, thick);
   }
-  // 선: 색마다 따로 따면 번진 가장자리 때문에 한 선이 여러 색으로 쪼개진다 → 모든 색의 선을 한꺼번에 딴 뒤 선마다 본래 색 하나를 정한다
-  onStage?.('선을 한 줄로 잇는 중…');
+  // 선 후보: 모든 색의 얇은 부분을 한꺼번에 중심선으로(번진 가장자리 때문에 한 선이 여러 색으로 쪼개지지 않게)
+  onStage?.('구조선을 찾는 중…');
   await yieldUI();
   const covU = new Float32Array(N);
   for (const c of cov.values()) for (let i = 0; i < N; i++) covU[i] += c[i];
@@ -695,17 +682,16 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   blur3(covU, sm, w, h);
   const thinU = new Uint8Array(N);
   for (let i = 0; i < N; i++) thinU[i] = (sm[i] >= 0.4 || covU[i] >= 0.3) && !thickAll[i] ? 1 : 0;
-  const allChains = await strokeLines(thinU, thickAll, covU, w, h, k);
-  const byColor = new Map<number, Chain[]>();
+  const plen = (c: Pt[]) => { let t = 0; for (let i = 1; i < c.length; i++) t += Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1]); return t; };
+  // 구조선만 다시 그린다: 길고(굵기의 12배·12px 이상) 굵기가 고른 선. 짧거나 굵기가 들쭉날쭉한 것(실루엣·나무·소품)은 원본 모양 그대로 면으로 둔다
   const dBg = (j: number) => Math.hypot(C[j][0] - C[bgI][0], C[j][1] - C[bgI][1], C[j][2] - C[bgI][2]);
-  for (const m of allChains) {
-    const acc = new Map<number, number>(); let tot = 0;
-    for (let i = 0; i < m.c.length; i += 2) {
-      const x = Math.round(m.c[i][0]), y = Math.round(m.c[i][1]);
-      for (const [j, c] of cov) {
-        const v = x >= 0 && y >= 0 && x < w && y < h ? c[y * w + x] : 0;
-        if (v > 0) { acc.set(j, (acc.get(j) ?? 0) + v); tot += v; }
-      }
+  const colorOf = (c: Pt[]) => {
+    const acc = new Map<number, number>();
+    for (let i = 0; i < c.length; i++) {
+      const x = Math.round(c[i][0]), y = Math.round(c[i][1]);
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      const q = y * w + x;
+      for (const [j, cc] of cov) if (cc[q] > 0 && !thicks.get(j)![q]) acc.set(j, (acc.get(j) ?? 0) + cc[q]);
     }
     // 가장 많이 덮인 색이 기본. 그 색이 배경과 어떤 색 사이의 번진 색이고 그 색도 선 위에 꽤(30% 이상) 있으면 그 색이 본래 색
     let best = -1, bv = 0;
@@ -716,8 +702,64 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
       const ap = [P[0] - A[0], P[1] - A[1], P[2] - A[2]], t = (ab[0] * ap[0] + ab[1] * ap[1] + ab[2] * ap[2]) / L2;
       if (t > 0.1 && t < 0.95 && Math.hypot(ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t) < 25) best = j;
     }
-    if (best < 0) continue;
-    (byColor.get(best) ?? byColor.set(best, []).get(best)!).push(m);
+    return best;
+  };
+  // 같은 색이 번져 옅어진 관계(배경→진한 색 사이)면 같은 선으로 본다
+  const onRay = (a: number, b: number) => {
+    const A = C[bgI], B = C[b], P = C[a], ab = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], L2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2 || 1;
+    const ap = [P[0] - A[0], P[1] - A[1], P[2] - A[2]], t = (ab[0] * ap[0] + ab[1] * ap[1] + ab[2] * ap[2]) / L2;
+    return t > 0.1 && t < 0.95 && Math.hypot(ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t) < 25;
+  };
+  const sameColor = (a: number, b: number) => a === b || (a >= 0 && b >= 0 && (onRay(a, b) || onRay(b, a)));
+  const allChains = (await strokeLines(thinU, thickAll, covU, w, h, k, colorOf, sameColor)).filter((m) => {
+    if (m.color < 0 || m.spread > 0.45 || plen(m.c) < Math.max(24 * k, 12 * m.width * k)) return false;
+    // 구조선 = 대부분 직선이거나 완만한 곡선. 가지·덤불처럼 자주 꺾이는 선은 원본 모양 그대로(면) 둔다
+    const segs = fitChain(m.c, k, m.width, m.closed);
+    let ls = 0, lt = 0;
+    for (const sg of segs) {
+      const L = sg.t === 'L' ? Math.hypot(sg.b[0] - sg.a[0], sg.b[1] - sg.a[1]) : sg.pts.reduce((t, q, i) => (i ? t + Math.hypot(q[0] - sg.pts[i - 1][0], q[1] - sg.pts[i - 1][1]) : 0), 0);
+      lt += L; if (sg.t === 'L') ls += L;
+    }
+    if (lt > 0 && ls / lt >= 0.6) return true;
+    const turns = rdp(m.c, 1.2 * k).length - 2;
+    return turns <= (lt * k) / (18 * k) * 0.6;
+  });
+  const byColor = new Map<number, Chain[]>();
+  for (const m of allChains) (byColor.get(m.color) ?? byColor.set(m.color, []).get(m.color)!).push(m);
+  // 다시 그린 선 자리의 원본 화소는 면에서 뺀다
+  const zone = new Uint8Array(N);
+  const mU = new Uint8Array(N); for (let i = 0; i < N; i++) mU[i] = thinU[i] | thickAll[i];
+  const dU = insideDist(mU, w, h), blob = new Uint8Array(N), nearFill = dilate(thickAll, w, h, rT + 1);
+  let maxW = 0; for (const ms of byColor.values()) for (const m of ms) maxW = Math.max(maxW, m.width);
+  for (const ms of byColor.values()) for (const m of ms) {
+    const r = Math.ceil(m.width * k / 2 + 2), keepIn = (m.width * k / 2 + 1.5) * 3;   // 선보다 두꺼운 곳(동선의 점 등)은 남긴다
+    for (const [px0, py0] of m.c) {
+      const cx = Math.round(px0), cy = Math.round(py0);
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h || dx * dx + dy * dy > r * r) continue;
+        const q = y * w + x; if (nearFill[q]) continue; if (dU[q] <= keepIn) zone[q] = 1; else blob[q] = 1;
+      }
+    }
+  }
+  { const keepB = dilate(blob, w, h, Math.ceil(maxW * k / 2 + 2)); for (let i = 0; i < N; i++) if (keepB[i]) zone[i] = 0; }   // 선 위의 점(동선 노드)은 통째로 남긴다
+  // 면: 원본 모양 그대로(덮임 0.5 등고선) → 사각형·둥근 사각형·원·타원이면 정확한 도형, 아니면 직선 교정 패스
+  for (const ci of fgs) {
+    onStage?.(`색 면을 따는 중… (${pass.length + 1}/${fgs.length})`);
+    await yieldUI();
+    const s2 = cov.get(ci)!;      // 흐리지 않은 덮임 그대로 → 창문 같은 작은 구멍·디테일도 살린다
+    for (let i = 0; i < N; i++) tf[i] = zone[i] ? 0 : s2[i];
+    for (let x = 0; x < w; x++) { tf[x] = 0; tf[(h - 1) * w + x] = 0; }
+    for (let y = 0; y < h; y++) { tf[y * w] = 0; tf[y * w + w - 1] = 0; }
+    const loops = contours(tf, w, h, 0.5).filter((l) => area(l) >= 8 * k * k).map((l) => l.map(([x, y]) => [x / k, y / k] as Pt));
+    const shapes: Pt[][] = [], free: Pt[][] = [];
+    for (const l of loops) { if (fitShape(l)) shapes.push(l); else free.push(l); }
+    const polys = free.map((l) => loopPoly(smoothClosed(l, 2), 0.5)).filter((q) => q.length >= 3);
+    for (const q of polys) for (let i = 0; i < q.length; i++) {
+      const a = q[i], b = q[(i + 1) % q.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (L >= 10) samples.push([angOf(a, b), L]);
+    }
+    pass.push({ fill: hex(C[ci]), shapes, polys, lines: [] });
   }
   const strokeLayers: { fill: string; lines: SLine[] }[] = [];
   for (const [j, ms] of byColor) {
@@ -735,10 +777,11 @@ export async function vectorizeFlat(img: HTMLImageElement, onStage?: (s: string)
   for (const P of pass) {
     const edges = P.polys.map((q) => polyEdges(q, 6));
     alignEdges(edges.flat(), 1.2);
-    const parts = [...P.shapes.map((l) => fitShape(l)!), ...P.polys.map((q, i) => polyPath(rebuild(q, edges[i], 3), edges[i]))];
+    const parts = [...P.shapes.map((l) => fitShape(l)!), ...P.polys.map((q, i) => polyPath(rebuild(q, edges[i], 5), edges[i]))];
     const strokes = strokePaths(P.lines);
     if (parts.length || strokes.length) layers.push({ fill: P.fill, d: parts.join(''), strokes });
   }
+  prepareLines(strokeLayers.flatMap((L) => L.lines));
   for (const L of strokeLayers) { const strokes = strokePaths(L.lines); if (strokes.length) layers.push({ fill: L.fill, d: '', strokes }); }
   } finally { OUT = 1; }
   return { w: W0, h: H0, bg, layers, axes: axes.map((a) => a) };
@@ -823,7 +866,13 @@ function fitShape(l: Pt[]): string | null {
   }
   if (fill > 0.78 && fill <= 0.995) {
     const r = Math.sqrt(Math.max(0, (bw * bh - A) / (4 - Math.PI)));
-    if (r < 1.5 || r > Math.min(bw, bh) / 2 + 0.5) return null;
+    if (r > Math.min(bw, bh) / 2 + 0.5) return null;
+    // 모서리 번짐 정도로만 깎인 것(반지름이 작은 것)은 각진 사각형
+    if (r < Math.max(2.5, 0.1 * Math.min(bw, bh))) {
+      let bad = 0;
+      for (const [x, y] of l) if (Math.min(Math.abs(x - x0), Math.abs(x - x1), Math.abs(y - y0), Math.abs(y - y1)) > 1.5) bad++;
+      return bad / l.length < 0.06 ? `M${n1(x0)} ${n1(y0)}H${n1(x1)}V${n1(y1)}H${n1(x0)}Z` : null;
+    }
     // 둥근 사각형 테두리까지 거리 평균이 1px 안쪽이어야
     let e2 = 0;
     for (const [x, y] of l) {
@@ -832,6 +881,10 @@ function fitShape(l: Pt[]): string | null {
       e2 += Math.abs(Math.hypot(qx, qy) + inner - r);
     }
     if (e2 / l.length > 0.9) return null;
+    // 각진 사각형이 더 잘 맞으면 각진 사각형(모서리 번짐·붙은 선 때문에 둥글게 오판하지 않게)
+    let eS = 0;
+    for (const [x, y] of l) eS += Math.min(Math.abs(x - x0), Math.abs(x - x1), Math.abs(y - y0), Math.abs(y - y1));
+    if (eS <= e2 * 1.15) return `M${n1(x0)} ${n1(y0)}H${n1(x1)}V${n1(y1)}H${n1(x0)}Z`;
     const rr = Math.min(r, bw / 2, bh / 2);
     return `M${n1(x0 + rr)} ${n1(y0)}H${n1(x1 - rr)}A${n1(rr)} ${n1(rr)} 0 0 1 ${n1(x1)} ${n1(y0 + rr)}V${n1(y1 - rr)}A${n1(rr)} ${n1(rr)} 0 0 1 ${n1(x1 - rr)} ${n1(y1)}H${n1(x0 + rr)}A${n1(rr)} ${n1(rr)} 0 0 1 ${n1(x0)} ${n1(y1 - rr)}V${n1(y0 + rr)}A${n1(rr)} ${n1(rr)} 0 0 1 ${n1(x0 + rr)} ${n1(y0)}Z`;
   }
@@ -858,8 +911,8 @@ type Seg = { t: 'L'; a: Pt; b: Pt; dir: number } | { t: 'C'; pts: Pt[] };
 type SLine = { width: number; closed: boolean; segs: Seg[] };
 
 /** 가는 선 마스크 → 한 줄 선들(원본 좌표). 이어지는 조각은 하나로 잇고, 굵기는 색 덮임을 가로로 적분해 잰 뒤 비슷한 굵기끼리 하나로 맞춘다 */
-type Chain = { c: Pt[]; width: number; closed: boolean };
-async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array, w: number, h: number, k: number): Promise<Chain[]> {
+type Chain = { c: Pt[]; width: number; closed: boolean; spread: number; color: number };
+async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array, w: number, h: number, k: number, colorOf: (c: Pt[]) => number = () => 0, sameColor: (a: number, b: number) => boolean = (a, b) => a === b): Promise<Chain[]> {
   let any = false; for (let i = 0; i < w * h; i++) if (thin[i]) { any = true; break; }
   if (!any) return [];
   const sk = thin.slice();
@@ -892,9 +945,11 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
       ws.push(best);
     }
     ws.sort((a, b) => a - b);
-    return Math.min(7, (ws[ws.length >> 1] ?? 0) / k);
+    const med = ws[ws.length >> 1] ?? 0;
+    return { w: Math.min(7, med / k), sp: ws.length >= 4 && med > 0 ? (ws[Math.floor(ws.length * 0.8)] - ws[Math.floor(ws.length * 0.2)]) / med : 0 };
   };
-  const items = chains(sk, w, h).map((c) => ({ c, width: widthOf(c) })).filter((it) => it.width >= 0.35);
+  const items = chains(sk, w, h).map((c) => { const r = widthOf(c); return { c, width: r.w, spread: r.sp }; }).filter((it) => it.width >= 0.35);
+  const col = items.map((it) => colorOf(it.c));      // 색이 다른 선끼리는 잇지 않는다(녹색 선 끝에 흰 동선이 붙는 등)
   // 끝 잇기: 갈림점·모서리에서 만나는 끝, 같은 방향으로 끊긴 틈을 짝지어 한 줄로
   type End = { it: number; p: Pt; d: Pt };
   const ends: End[] = [];
@@ -910,6 +965,7 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
   for (let a = 0; a < ends.length; a++) for (let b = a + 1; b < ends.length; b++) {
     const A = ends[a], B = ends[b];
     if (A.it === B.it && items[A.it].c.length < 12) continue;
+    if (!sameColor(col[A.it], col[B.it])) continue;
     const wa = items[A.it].width, wb = items[B.it].width, wm = Math.max(wa, wb);
     const dx = B.p[0] - A.p[0], dy = B.p[1] - A.p[1];
     const G = Math.max(14 * k, 10 * wm * k);
@@ -924,22 +980,22 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
   cand.sort((x, y) => x[0] - y[0]);
   const partner = new Int32Array(ends.length).fill(-1);
   for (const [, a, b] of cand) if (partner[a] < 0 && partner[b] < 0) { partner[a] = b; partner[b] = a; }
-  const vis = new Uint8Array(items.length), merged: { c: Pt[]; width: number; closed: boolean }[] = [];
+  const vis = new Uint8Array(items.length), merged: Chain[] = [];
   const follow = (start: number, side: number) => {
     const pts: Pt[] = [];
-    let it = start, sd = side, ws = 0, ls = 0, closed = false;
+    let it = start, sd = side, ws = 0, ls = 0, sp = 0, closed = false;
     for (;;) {
       vis[it] = 1;
       const c = items[it].c;
       pts.push(...(sd === 0 ? c : c.slice().reverse()));
-      ws += items[it].width * c.length; ls += c.length;
+      ws += items[it].width * c.length; sp += items[it].spread * c.length; ls += c.length;
       const pe = partner[it * 2 + (1 - sd)];
       if (pe < 0) break;
       const nx = ends[pe].it;
       if (vis[nx]) { if (nx === start && pe === start * 2 + side) closed = true; break; }
       it = nx; sd = pe - nx * 2;
     }
-    merged.push({ c: pts, width: ws / ls, closed });
+    merged.push({ c: pts, width: ws / ls, closed, spread: sp / ls, color: colorOf(pts) });
   };
   for (let i = 0; i < items.length; i++) for (const s of [0, 1]) if (!vis[i] && partner[i * 2 + s] < 0) follow(i, s);
   for (let i = 0; i < items.length; i++) if (!vis[i]) follow(i, 0);
@@ -966,7 +1022,10 @@ async function strokeLines(thin: Uint8Array, thick: Uint8Array, cv: Float32Array
       const m = keep[i];
       if (m.closed || lens[i] >= 8 * m.width * k) continue;
       let hit = 0; for (const p of m.c) if (near(p, Math.max(2, m.width * k))) hit++;
-      if (hit >= m.c.length * 0.6) keep.splice(i, 1);
+      if (hit >= m.c.length * 0.6) { keep.splice(i, 1); continue; }
+      // 갈림점에 낀 짧은 이음 조각(양끝이 모두 다른 긴 선에 닿음)도 버린다 → 이음새 혹 방지
+      const e0 = m.c[0], e1 = m.c[m.c.length - 1];
+      if (lens[i] < 3 * m.width * k && near(e0, Math.max(3, 2 * m.width * k)) && near(e1, Math.max(3, 2 * m.width * k))) keep.splice(i, 1);
     }
   }
   // 자유로운 끝: 앞쪽(또는 아주 가까이)에 다른 선·면이 있으면 그 점까지 늘인다
@@ -1025,11 +1084,11 @@ function fitChain(c: Pt[], k: number, wpx: number, closed: boolean): Seg[] {
   let sp = closed ? smoothClosed(c, r) : smooth(c, r);
   if (closed) sp = [...sp, sp[0]];
   if (sp.length < 2) sp = [c[0], c[0]];
-  const eps = Math.max(0.9 * k, 0.3 * wk), Ls = Math.max(10 * k, 4 * wk);
+  const eps = Math.max(0.7 * k, 0.2 * wk), Ls = Math.max(14 * k, 5 * wk);
   const idx = rdpIdx(sp, eps), segs: Seg[] = [];
   let run = -1;
   const curve = (i0: number, i1: number) => {
-    const q = rdp(smooth(sp.slice(i0, i1 + 1), Math.max(2, Math.round(1.2 * wk))), 0.5 * k).map(([x, y]) => [x / k, y / k] as Pt);
+    const q = rdp(smooth(sp.slice(i0, i1 + 1), Math.max(2, Math.round(1.2 * wk))), 0.3 * k).map(([x, y]) => [x / k, y / k] as Pt);
     if (q.length >= 2) segs.push({ t: 'C', pts: q });
   };
   for (let s = 0; s < idx.length - 1; s++) {
@@ -1069,8 +1128,8 @@ function fitLine(sp: Pt[], i0: number, i1: number, k: number): Seg {
   return { t: 'L', a: pr(sp[i0]), b: pr(sp[i1]), dir: -1 };
 }
 
-/** 직선 조각을 그림 축에 맞추고(같은 줄은 정렬), 꺾임은 교점으로 모아 한 선 = 한 패스로. 굵기별로 묶는다 */
-function strokePaths(lines: SLine[]): { width: number; d: string }[] {
+/** 모든 선(색 구분 없이): 직선 조각을 그림 축에 맞추고 같은 줄은 정렬 → 선 안의 꺾임은 교점으로 → 선 끝은 만나는 선 위에 정확히 */
+function prepareLines(lines: SLine[]) {
   const Ls = lines.flatMap((ln) => ln.segs.filter((s): s is Extract<Seg, { t: 'L' }> => s.t === 'L'));
   for (const s of Ls) {
     const vx = s.b[0] - s.a[0], vy = s.b[1] - s.a[1], L = Math.hypot(vx, vy);
@@ -1095,18 +1154,18 @@ function strokePaths(lines: SLine[]): { width: number; d: string }[] {
     for (const q of G) { if (g.length && q.o - g[g.length - 1].o > 1.5) flush(); g.push(q); }
     flush();
   }
-  const byWidth = new Map<number, string[]>();
+  // 선 안: 직선 사이에 낀 짧은 곡선(뭉개진 모서리)은 교점 모서리로, 이웃 조각은 같은 점에서 만나게
   for (const ln of lines) {
-    let S = ln.segs.slice();
-    if (!S.length) continue;
     const near = 3 * Math.max(2, ln.width);
-    // 직선 사이에 낀 짧은 곡선(뭉개진 모서리)은 교점 모서리로
+    let S = ln.segs;
     S = S.filter((s, i) => {
       if (s.t !== 'C') return true;
       const p = S[i - 1], n = S[i + 1];
       if (p?.t !== 'L' || n?.t !== 'L') return true;
-      const X = lineX(p.a, p.b, n.a, n.b), mid = s.pts[s.pts.length >> 1];
-      return !(X && Math.hypot(X[0] - mid[0], X[1] - mid[1]) < near);
+      // 굵기 정도로 아주 짧은 곡선만(뭉개진 모서리) 교점으로. 동선의 둥근 모서리는 곡선 그대로
+      const len = s.pts.reduce((t, q, i) => (i ? t + Math.hypot(q[0] - s.pts[i - 1][0], q[1] - s.pts[i - 1][1]) : 0), 0);
+      const X = lineX(p.a, p.b, n.a, n.b);
+      return !(X && len < 2.5 * Math.max(2, ln.width));
     });
     const join = (p: Seg, n: Seg) => {
       if (p.t === 'L' && n.t === 'L') {
@@ -1116,9 +1175,54 @@ function strokePaths(lines: SLine[]): { width: number; d: string }[] {
       } else if (p.t === 'L' && n.t === 'C') n.pts[0] = p.b;
       else if (p.t === 'C' && n.t === 'L') p.pts[p.pts.length - 1] = n.a;
     };
-    S = S.map((s) => (s.t === 'L' ? { ...s, a: [...s.a] as Pt, b: [...s.b] as Pt } : { ...s, pts: s.pts.map((q) => [...q] as Pt) }));
     for (let i = 1; i < S.length; i++) join(S[i - 1], S[i]);
     if (ln.closed && S.length > 1) join(S[S.length - 1], S[0]);
+    ln.segs = S;
+  }
+  // 선 끝: 근처(굵기의 1.6배 안)에 다른 선이 있으면 그 선의 중심선 위로 정확히(직선끼리는 교점) — T자·모서리 이음새가 어긋나거나 삐져나오지 않게
+  type Piece = { a: Pt; b: Pt; ln: SLine; seg: Seg };
+  const pieces: Piece[] = [];
+  for (const ln of lines) for (const s of ln.segs) {
+    if (s.t === 'L') pieces.push({ a: s.a, b: s.b, ln, seg: s });
+    else for (let i = 0; i < s.pts.length - 1; i++) pieces.push({ a: s.pts[i], b: s.pts[i + 1], ln, seg: s });
+  }
+  const closest = (p: Pt, q: Piece): [Pt, number] => {
+    const vx = q.b[0] - q.a[0], vy = q.b[1] - q.a[1], L2 = vx * vx + vy * vy || 1e-9;
+    const t = Math.max(0, Math.min(1, ((p[0] - q.a[0]) * vx + (p[1] - q.a[1]) * vy) / L2));
+    const c: Pt = [q.a[0] + vx * t, q.a[1] + vy * t];
+    return [c, Math.hypot(c[0] - p[0], c[1] - p[1])];
+  };
+  for (const ln of lines) {
+    if (ln.closed || !ln.segs.length) continue;
+    for (const end of [0, 1]) {
+      const s = end ? ln.segs[ln.segs.length - 1] : ln.segs[0];
+      const p: Pt = s.t === 'L' ? (end ? s.b : s.a) : (end ? s.pts[s.pts.length - 1] : s.pts[0]);
+      let best: Piece | null = null, bp: Pt = p, bd = Infinity;
+      for (const q of pieces) {
+        if (q.ln === ln) continue;
+        const tol = 1.6 * Math.max(ln.width, q.ln.width, 1.5);
+        if (Math.min(q.a[0], q.b[0]) - tol > p[0] || Math.max(q.a[0], q.b[0]) + tol < p[0] || Math.min(q.a[1], q.b[1]) - tol > p[1] || Math.max(q.a[1], q.b[1]) + tol < p[1]) continue;
+        const [c, d] = closest(p, q);
+        if (d <= tol && d < bd) { bd = d; bp = c; best = q; }
+      }
+      if (!best) continue;
+      let target = bp;
+      if (s.t === 'L' && best.seg.t === 'L') {
+        const X = lineX(s.a, s.b, best.a, best.b);
+        if (X && Math.hypot(X[0] - p[0], X[1] - p[1]) <= 2.5 * Math.max(ln.width, best.ln.width, 1.5)) target = X;
+      }
+      if (s.t === 'L') { if (end) s.b = target; else s.a = target; }
+      else if (end) s.pts[s.pts.length - 1] = target; else s.pts[0] = target;
+    }
+  }
+}
+
+/** 선들 → 굵기별 패스(한 선 = 한 패스) */
+function strokePaths(lines: SLine[]): { width: number; d: string }[] {
+  const byWidth = new Map<number, string[]>();
+  for (const ln of lines) {
+    const S = ln.segs;
+    if (!S.length) continue;
     const first = S[0].t === 'L' ? S[0].a : S[0].pts[0];
     let d = `M${n1(first[0])} ${n1(first[1])}`;
     for (const s of S) {
