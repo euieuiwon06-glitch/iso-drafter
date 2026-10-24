@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ISO DRAFTER</title>
+  <meta name="description" content="이미지를 깔끔한 등각(아이소메트릭) 도면 SVG로 다시 그리는 에디터" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
+  <script type="module" crossorigin src="./assets/index-CbNgvT9u.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-IrWZodyM.css">
+</head>
+<body>
+  <div id="convertView" class="convert">
+    <header class="top">
+      <div class="brand">ISO<span>DRAFTER</span></div>
+      <div class="seg mode-seg" id="convMode" role="group" aria-label="변환 방식">
+        <button data-m="iso">아이소메트릭 도면 재작도</button><button data-m="flat">평면 그래픽 벡터화</button>
+      </div>
+      <div class="group end">
+        <button class="btn" id="btnOpenEditor">에디터 열기</button>
+        <button class="btn icon" id="btnKey2" title="API 키 설정">⚙</button>
+      </div>
+      <div class="loadbar" role="progressbar" aria-label="작업 진행 중" hidden><i></i></div>
+    </header>
+
+    <section id="stepUpload" class="pane upload">
+      <div class="intro">
+        <h1>그림을 올리면<br>반듯하게 바로잡아 SVG로 만들어 드려요</h1>
+        <p id="modeDesc"></p>
+      </div>
+      <div class="resume" id="resumeBox" hidden>
+        <span id="resumeText"></span>
+        <button class="btn primary" id="btnResumeJob">이어서 하기</button>
+        <button class="btn" id="btnDiscardJob">지우기</button>
+      </div>
+      <label class="drop" id="drop">
+        <input id="fileConvert" type="file" accept="image/*" hidden />
+        <b>이미지를 끌어다 놓거나 클릭해서 선택</b>
+        <span>PNG · JPG · WEBP</span>
+      </label>
+      <div class="opts">
+        <label class="iso-only">선 굵기
+          <select id="selStroke"><option value="thin">가늘게</option><option value="normal" selected>보통</option><option value="bold">굵게</option></select>
+        </label>
+        <label class="iso-only">자동 보정 횟수
+          <select id="selRounds"><option value="0">0회 (빠름)</option><option value="1" selected>1회 (추천)</option><option value="2">2회</option><option value="3">3회</option></select>
+        </label>
+        <span class="muted iso-only" id="keyState"></span>
+      </div>
+    </section>
+
+    <section id="stepRun" class="pane run" hidden>
+      <div class="run-preview"><img id="runImg" alt="" /></div>
+      <div class="run-side">
+        <h2>변환 중</h2>
+        <p class="eta-total" id="etaTotal"></p>
+        <ol id="steps" class="steps"></ol>
+        <p class="muted" id="runMsg"></p>
+        <div class="stack">
+          <button class="btn primary" id="btnResume" hidden>이 단계부터 다시</button>
+          <button class="btn" id="btnStop">중단</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="stepResult" class="pane result" hidden>
+      <div class="result-view" id="resultView">
+        <div class="cmp" id="cmp">
+          <img id="resUnder" alt="원본(투시 교정본)" />
+          <img id="resSvg" alt="변환 결과" />
+          <span class="cmp-tag left">원본</span>
+          <span class="cmp-tag right">결과</span>
+          <div class="cmp-handle" id="cmpHandle" role="slider" aria-label="비교 위치" tabindex="0"><i></i></div>
+        </div>
+      </div>
+      <div class="result-side">
+        <h2>완료</h2>
+        <p class="muted" id="resStats"></p>
+        <div class="field"><span>보기</span>
+          <div class="seg" id="cmpMode">
+            <button class="on" data-m="wipe">비교 슬라이더</button><button data-m="result">결과만</button><button data-m="orig">원본만</button>
+          </div>
+        </div>
+        <div class="field iso-only"><span>가구·제품 표현</span>
+          <div class="seg" id="detailMode">
+            <button class="on" data-m="shapes">도형·곡선</button><button data-m="vector">원본 선 그대로(참고)</button>
+          </div>
+          <span class="muted small" id="traceState"></span>
+        </div>
+        <label class="field iso-only"><span>구조선 굵기 (벽·바닥·유리) <b id="resStrokeVal">1.35</b></span><input id="rngResStroke" type="range" min="40" max="300" value="135" /></label>
+        <label class="field iso-only"><span>가구·제품 선 굵기 <b id="resDetailVal">1.00</b></span><input id="rngResDetail" type="range" min="30" max="300" value="100" /></label>
+        <div class="stack">
+          <div class="row2"><button class="btn dark" id="btnResSvg">SVG 다운로드</button><button class="btn" id="btnResCopy">SVG 복사</button></div>
+          <button class="btn iso-only" id="btnResEdit">에디터에서 다듬기</button>
+          <button class="btn iso-only" id="btnResMore">AI 보정 한 번 더</button>
+          <button class="btn" id="btnResNew">새 이미지</button>
+        </div>
+        <p class="muted small iso-only">어긋난 가구나 빠진 벽은 ‘에디터에서 다듬기’로 드래그해 맞출 수 있어요.</p>
+      </div>
+    </section>
+  </div>
+
+  <div id="editorView" hidden>
+  <header class="top">
+    <button class="btn" id="btnBack">← 변환 화면</button>
+    <div class="brand">ISO<span>DRAFTER</span></div>
+    <div class="group">
+      <label class="btn" title="원본 이미지 열기">이미지 열기<input id="fileImage" type="file" accept="image/*" hidden /></label>
+      <button class="btn" id="btnSample">예시 불러오기</button>
+      <button class="btn" id="btnClear">새 장면</button>
+    </div>
+    <div class="group ai">
+      <button class="btn primary" id="btnDraft">AI 초안</button>
+      <button class="btn" id="btnRefine" title="현재 장면을 원본과 겹쳐 비교해서 다시 맞춥니다">AI 보정</button>
+    </div>
+    <div class="group">
+      <button class="btn icon" id="btnUndo" title="되돌리기 (Ctrl+Z)">↶</button>
+      <button class="btn icon" id="btnRedo" title="다시 하기 (Ctrl+Y)">↷</button>
+    </div>
+    <div class="group sliders">
+      <label>밑그림 <input id="rngUnder" type="range" min="0" max="100" value="35" /></label>
+      <label><input id="chkGrid" type="checkbox" /> 격자</label>
+      <label>선 굵기 <input id="rngStroke" type="range" min="80" max="220" value="135" /></label>
+    </div>
+    <div class="group end">
+      <label class="btn">JSON 열기<input id="fileJson" type="file" accept=".json,application/json" hidden /></label>
+      <button class="btn" id="btnJson">JSON 저장</button>
+      <button class="btn dark" id="btnSvg">SVG 내보내기</button>
+      <button class="btn icon" id="btnKey" title="API 키 설정">⚙</button>
+    </div>
+    <div class="loadbar" role="progressbar" aria-label="작업 진행 중" hidden><i></i></div>
+  </header>
+
+  <main class="layout">
+    <aside class="left">
+      <h3>추가</h3>
+      <div id="addGrid" class="add-grid"></div>
+      <h3>레이어 <small>위 = 먼저 그림(뒤쪽)</small></h3>
+      <ol id="layers" class="layers"></ol>
+    </aside>
+
+    <section class="stage" id="stageWrap">
+      <svg id="stage" xmlns="http://www.w3.org/2000/svg">
+        <rect id="paper" fill="#fff" />
+        <image id="under" preserveAspectRatio="none" />
+        <g id="gridLayer"></g>
+        <g id="sceneLayer"></g>
+        <g id="selLayer"></g>
+      </svg>
+      <div class="hint" id="hint">빈 곳 드래그 = 화면 이동 · 휠 = 확대/축소 · 요소 드래그 = 이동(5 단위 맞춤, Alt = 자유) · Delete = 삭제 · Ctrl+D = 복제</div>
+    </section>
+
+    <aside class="right" id="props">
+      <p class="empty">요소를 선택하면 여기서 수치를 편집할 수 있어요.</p>
+    </aside>
+  </main>
+
+  <footer class="status"><span id="status">준비됨</span><button class="btn small" id="btnCancel" hidden>취소</button></footer>
+  </div>
+
+  <dialog id="dlgKey">
+    <form method="dialog">
+      <h3>Anthropic API 키</h3>
+      <p>AI 초안·보정 기능에만 쓰여요. 키는 <b>이 브라우저에만</b> 저장되고, 요청은 Anthropic API로 바로 전송돼요. 사용 요금은 키 주인의 계정에 청구돼요(초안 1회에 대략 0.3~1달러).</p>
+      <p class="muted">키는 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> → API Keys에서 만들 수 있어요. 공용 컴퓨터에서는 쓰고 나서 지워 주세요.</p>
+      <input id="inpKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <div class="row">
+        <button class="btn" value="clear" id="btnKeyClear">키 지우기</button>
+        <span class="spacer"></span>
+        <button class="btn" value="cancel">닫기</button>
+        <button class="btn primary" value="save" id="btnKeySave">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlgConfirm">
+    <form method="dialog">
+      <p></p>
+      <div class="row"><span class="spacer"></span><button class="btn" value="cancel">취소</button><button class="btn primary" value="ok">계속</button></div>
+    </form>
+  </dialog>
+
+</body>
+</html>
